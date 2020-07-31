@@ -27,85 +27,6 @@ ASSEMBLA_USERID_TO_GITHUB_USERID = {
     'ZZZ': 'User3',
 }
 
-# the following field definitions should reconcile with the field schema in the json file
-ASSEMBLA_MILESTONES_FIELDS = [
-    'id',
-    'due_date',
-    'title',
-    'user_id',
-    'created_at',
-    'created_by',
-    'space_id',
-    'description',
-    'is_completed',
-    'completed_date',
-    'from_basecamp',
-    'basecamp_milestone_id',
-    'updated_at',
-    'updated_by',
-    'release_level',
-    'release_notes',
-    'planner_type',
-    'start_date',
-    'budget',
-    'obstacles',
-    'project_plan_type',
-    'project_plan_url'
-]
-
-ASSEMBLA_TICKETS_FIELDS = [
-    'id',
-    'number',
-    'reporter_id',
-    'assigned_to_id',
-    'space_id',
-    'summary',
-    'priority',
-    'description',
-    'created_on',
-    'updated_at',
-    'milestone_id',
-    'component_id',
-    'notification_list',
-    'completed_date',
-    'working_hours',
-    'is_story',
-    'importance',
-    'story_importance',
-    'permission_type',
-    'ticket_status_id',
-    'state',
-    'estimate',
-    'total_estimate',
-    'total_invested_hours',
-    'total_working_hours',
-    'status_updated_at',
-    'due_date',
-    'milestone_updated_at',
-]
-
-ASSEMBLA_TICKET_STATUS_FIELDS = [
-    'id',
-    'space_tool_id',
-    'name',
-    'state',
-    'list_order',
-    'settings',
-    'created_at',
-    'updated_at'
-]
-
-ASSEMBLA_TICKET_COMMENT_FIELDS = [
-    'id',
-    'ticket_id',
-    'user_id',
-    'created_on',
-    'updated_at',
-    'comment',
-    'ticket_changes',
-    'rendered'
-]
-
 ASSEMBLA_MILESTONES = []
 ASSEMBLA_TICKETS = []
 ASSEMBLA_TICKET_STATUSES = []
@@ -143,6 +64,52 @@ def findgithubobjectbyassemblaid(assemblaid, githubobjectcollection):
     return next(iter(filter(lambda x: x.title.startswith(assemblaid), githubobjectcollection)), None)
 
 
+def filereadertoassemblaobjectgenerator(filereader):
+    """
+    File reader to assembla object generator
+    :param filereader: File object which is read line by line
+    :return: Generator which yields tuple (linenum, line, linetype, assemblaobject)
+    """
+    fieldmap = {}
+
+    # for each line determine the assembla object type, read all attributes to dict using the mappings
+    # assign a key for each object which is used to link github <-> assembla objects to support updates
+    for linenum, line in enumerate(filereader.readlines()):
+
+        # Remove all non printable characters from the line
+        _line = ''.join(x for x in line if x in string.printable)
+        if line != _line:
+            logging.warning('line #{0}: Unprintable chars: {1}'.format(linenum, _line))
+        line = _line
+        logging.debug('line #{0}: {1}'.format(linenum, line))
+
+        # Parse the field definition if present
+        fields = line.split(':fields, ')
+        if len(fields) > 2:
+            logging.error("line #{0}: Unexpected field count: {1}".format(linenum, line))
+            continue
+        if len(fields) > 1:
+            key = fields[0]
+            fieldmap[key] = json.loads(fields[1])
+            continue
+
+        # Parse the table entry
+        heading = line.split(', [')
+        if len(heading) < 2:
+            logging.error("line #{0}: Unexpected syntax: {1}".format(linenum, line))
+            continue
+        linetype = heading[0]
+        if linetype not in fieldmap:
+            logging.error("line #{0}: Linetype '{2}' not present: {1}".format(linenum, line, linetype))
+            continue
+        currentline = line.replace(linetype + ', ', '').strip()
+        assemblaobject = mapjsonlinetoassembblaobject(currentline, fieldmap[linetype], linenum, linetype)
+
+        yield (linenum, line, linetype, assemblaobject)
+
+    logging.debug("Linetypes in file: {0}".format(fieldmap.keys()))
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--verbose', '-v', required=False, default=False, help='verbose logging')
@@ -165,31 +132,25 @@ def main():
     with open(runoptions.dumpfile, encoding='utf8') as filereader:
         # for each line determine the assembla object type, read all attributes to dict using the mappings
         # assign a key for each object which is used to link github <-> assembla objects to support updates
-        for linenum, line in enumerate(filereader.readlines()):
-            # remove all non printable characters from the line
-            line = ''.join(x for x in line if x in string.printable)
-            logging.debug('line #{0}: {1}'.format(linenum, line))
-            if line.startswith('milestones, ['):
-                currentline = line.replace('milestones, ', '').strip()
-                milestone = mapjsonlinetoassembblaobject(currentline, ASSEMBLA_MILESTONES_FIELDS, linenum, 'milestones')
+        for linenum, line, linetype, assemblaobject in filereadertoassemblaobjectgenerator(filereader):
+
+            if linetype == 'milestones':
+                milestone = assemblaobject
                 milestone['githubtitle'] = '[#{0}] - {1}'.format(milestone['id'], milestone['title'])
                 milestone['assemblakey'] = '[#{0}]'.format(milestone['id'])
                 ASSEMBLA_MILESTONES.append(milestone)
-            elif line.startswith('tickets, ['):
-                currentline = line.replace('tickets, ', '').strip()
-                ticket = mapjsonlinetoassembblaobject(currentline, ASSEMBLA_TICKETS_FIELDS, linenum, 'tickets')
+            elif linetype == 'tickets':
+                ticket = assemblaobject
                 ticket['githubtitle'] = '[#{0}] - {1}'.format(ticket['number'], ticket['summary'])
                 ticket['assemblakey'] = '[#{0}]'.format(ticket['number'])
                 ASSEMBLA_TICKETS.append(ticket)
-            elif line.startswith('ticket_statuses, ['):
-                currentline = line.replace('ticket_statuses, ', '').strip()
-                ticketstatus = mapjsonlinetoassembblaobject(currentline, ASSEMBLA_TICKET_STATUS_FIELDS, linenum, 'ticket statuses')
+            elif linetype == 'ticket_statuses':
+                ticketstatus = assemblaobject
                 ticketstatus['githubtitle'] = '[#{0}] - {1}'.format(ticketstatus['id'], ticketstatus['name'])
                 ticketstatus['assemblakey'] = '[#{0}]'.format(ticketstatus['id'])
                 ASSEMBLA_TICKET_STATUSES.append(ticketstatus)
-            elif line.startswith('ticket_comments, ['):
-                currentline = line.replace('ticket_comments, ', '').strip()
-                ticketcomment = mapjsonlinetoassembblaobject(currentline, ASSEMBLA_TICKET_COMMENT_FIELDS, linenum, 'ticket comments')
+            elif linetype == 'ticket_comments':
+                ticketcomment = assemblaobject
                 ticketcomment['assemblakey'] = '[#{0}]'.format(ticketcomment['id'])
                 ticketcomment['createdate'] = dateutil.parser.parse(ticketcomment['created_on']).strftime('%Y-%m-%d %H:%M')
                 ASSEMBLA_TICKET_COMMENTS.append(ticketcomment)
