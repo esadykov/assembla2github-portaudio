@@ -102,3 +102,11 @@ ENV/
 
 # mypy
 .mypy_cache/
+
+# Imported files
+import/
+
+# Project excludes
+__*
+.vscode/
+*.js

@@ -8,11 +8,10 @@ import sys
 import git
 import pathlib
 from tabulate import tabulate
-from pprint import pprint
 
 # FIXME: sveinse: Disabled for now
 # requires PyGithub library
-#import github
+# import github
 
 # map your assembla ticket statuses to Open or Closed here.
 ASSEMBLA_TICKET_STATUS_TO_GITHUB_ISSUE_STATUS = {
@@ -34,7 +33,7 @@ ASSEMBLA_USERID_TO_GITHUB_USERID = {
 
 # New mapping from assembla to generic name email ID
 ASSEMBLA_USERID = {
-    #'user_id': { 'name': '', 'email': '' },
+    # 'user_id': { 'name': '', 'email': '' },
 }
 
 ASSEMBLA_MILESTONES = []
@@ -89,9 +88,9 @@ def printtable(data, keys=None, exclude=None, include=None, filter=None):
         data = [v for v in data if filter(v)]
     data = transpose(data, keys)
     if not exclude:
-        exclude=[]
+        exclude = []
     if not include:
-        include=[]
+        include = []
     for k in list(data.keys()):
         if k in include:
             continue
@@ -111,7 +110,6 @@ def mapjsonlinetoassembblaobject(jsonstring, fieldlist, linenum, linetype):
     """
     logging.debug('attempting to parse line #{0} as a {1}'.format(linenum, linetype))
     arr = json.loads(jsonstring)
-    obj = {}
     if len(arr) != len(fieldlist):
         raise AssertionError('Assertion fail: {3} line [{0}] actual fields [{1}] != expected fields [{2}]'.format(linenum, len(arr), len(fieldlist), linetype))
     return {field: value for field, value in zip(fieldlist, arr)}
@@ -190,7 +188,7 @@ def genindex(data, keymap):
             continue
 
         ids = [k[key] for k in objects]
-        #if not ids:  # Skip empty tables
+        # if not ids:  # Skip empty tables
         #    continue
         if len(ids) != len(set(ids)):
             logging.warning(f"Non unique id in table '{table}', {len(set(ids))} unique of {len(ids)} rows")
@@ -259,7 +257,7 @@ def wikiparser(data):
             v['_level'] = 0
 
     # DEBUG
-    #printtable(data['wiki_pages'], include=('_level', ))
+    # printtable(data['wiki_pages'], include=('_level', ))
 
     # wiki_page_versions
     # ==================
@@ -299,7 +297,7 @@ def wikiparser(data):
         v['_updated_at'] = datetime.fromisoformat(v['updated_at'])
 
     # DEBUG
-    #printtable(data['wiki_page_versions'], include=('_blob_id', ))
+    # printtable(data['wiki_page_versions'], include=('_blob_id', ))
 
     def _wikitraverse(tree):
         """ Generator to produce all wiki pages in order from top to bottom """
@@ -354,9 +352,8 @@ def wikiindexproducer(index):
 
     out = '''**PortAudio**
 '''
-    level = 0
     for v in index:
-        out += '  '*v['_level'] + f"* [[{v['page_name']}]]\n"
+        out += ('  ' * v['_level']) + f"* [[{v['page_name']}]]\n"
     return out
 
 
@@ -368,7 +365,7 @@ def scrapeusers(data):
     # Copy the user database
     users = {k: v.copy() for k, v in ASSEMBLA_USERID.items()}
 
-    for table,entries in data.items():
+    for table, entries in data.items():
         if table.startswith('_'):
             continue
         for v in entries:
@@ -387,10 +384,10 @@ def scrapeusers(data):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--verbose', '-v', required=False, default=False, help='verbose logging')
-    #FIXME: parser.add_argument('--username', '-u', required=True, help='github username')
-    #FIXME: parser.add_argument('--password', '-p', required=True, help='github password')
+    # FIXME: parser.add_argument('--username', '-u', required=True, help='github username')
+    # FIXME: parser.add_argument('--password', '-p', required=True, help='github password')
     parser.add_argument('--dumpfile', '-f', required=True, help='assembla dumpfile')
-    #FIXME: parser.add_argument('--repository', '-r', required=True, help='github repository')
+    # FIXME: parser.add_argument('--repository', '-r', required=True, help='github repository')
     parser.add_argument('--wiki', metavar="GITREPO", help='wiki repo directory')
     runoptions = parser.parse_args()
 
@@ -466,7 +463,6 @@ def main():
         'test_plan_tickets': None
     })
 
-
     # -------------------------------------------------------------------------
     #  UserID scrape
 
@@ -474,7 +470,7 @@ def main():
     data["_index"]["_users"] = users
 
     # DEBUG
-    #printtable(users)
+    # printtable(users)
 
     # -------------------------------------------------------------------------
     #  WIKI conversion
@@ -489,14 +485,14 @@ def main():
         wikiorder = wikiparser(data)
 
         # DEBUG
-        #printtable(wikiorder, include=('_level', ))
+        # printtable(wikiorder, include=('_level', ))
 
         # Iterate over each wiki page version in order from old to new and get
         # the data required for git commit
         for commit in wikicommitgenerator(data['wiki_page_versions'], wikiorder):
 
             files = []
-            for name,contents in commit['files'].items():
+            for name, contents in commit['files'].items():
                 fname = pathlib.Path(workdir, name)
                 fname.write_bytes(contents.encode())
                 files.append(str(fname))
