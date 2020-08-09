@@ -105,8 +105,9 @@ ENV/
 
 # Imported files
 import/
+data/
 
 # Project excludes
 __*
 .vscode/
-*.js
+auth.json

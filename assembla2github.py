@@ -8,10 +8,10 @@ import sys
 import git
 import pathlib
 from tabulate import tabulate
-
-# FIXME: sveinse: Disabled for now
-# requires PyGithub library
-# import github
+from pprint import pprint
+import requests
+import time
+import github
 
 # map your assembla ticket statuses to Open or Closed here.
 ASSEMBLA_TICKET_STATUS_TO_GITHUB_ISSUE_STATUS = {
@@ -381,21 +381,53 @@ def scrapeusers(data):
     return users
 
 
+def check_config(auth, parser, required):
+
+    # Ensure we have auth data and the fields needed
+    if not auth:
+        parser.error("Authentication config --auth is required")
+    missing = [k for k in required if k not in auth]
+    if missing:
+        parser.error(f"Missing auth fields: {' '.join(missing)}")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--verbose', '-v', required=False, default=False, help='verbose logging')
-    # FIXME: parser.add_argument('--username', '-u', required=True, help='github username')
-    # FIXME: parser.add_argument('--password', '-p', required=True, help='github password')
-    parser.add_argument('--dumpfile', '-f', required=True, help='assembla dumpfile')
-    # FIXME: parser.add_argument('--repository', '-r', required=True, help='github repository')
-    parser.add_argument('--wiki', metavar="GITREPO", help='wiki repo directory')
+    parser.add_argument('--dumpfile', '-f', metavar="FILE", required=True, help='assembla dumpfile')
+    parser.add_argument('--auth', '-a', help='Authentication config')
+    subparser = parser.add_subparsers(title="command", help="Command to execute")
+
+    # Disabled for now
+    #subcmd = subparser.add_parser('tickets', help="Convert tickets to GitHub repo")
+    #subcmd.add_argument('repo', help="GitHub repository")
+    #subcmd.set_defaults(func=cmd_tickets)
+
+    subcmd = subparser.add_parser('users', help="List users")
+    subcmd.set_defaults(func=cmd_users)
+
+    subcmd = subparser.add_parser('userscrape', help="Scrape users from Assembla")
+    subcmd.add_argument('userdump', help="Output file to store users scrape")
+    subcmd.set_defaults(func=cmd_userscrape)
+
+    subcmd = subparser.add_parser('wiki', help="List wiki pages")
+    subcmd.set_defaults(func=cmd_wiki)
+
+    subcmd = subparser.add_parser('wikiconvert', help="Convert to GitHub wiki repo")
+    subcmd.add_argument('repo', help='cloned git wiki repo directory')
+    subcmd.set_defaults(func=cmd_wikiconvert)
+
+    subcmd = subparser.add_parser('wikiscrape', help="Scrape wiki from Assembla")
+    subcmd.add_argument('wikidump', help="Output file to store wiki scrape")
+    subcmd.set_defaults(func=cmd_wikiscrape)
+
     runoptions = parser.parse_args()
 
-    # Inital error checking
-    if runoptions.wiki:
-        wikirepo = pathlib.Path(runoptions.wiki)
-        if not wikirepo.is_dir():
-            parser.error(f"{str(wikirepo)}: Not a directory")
+    # Read JSON auth configuration file
+    auth = {}
+    if runoptions.auth:
+        with open(runoptions.auth, 'r') as f:
+            auth = json.load(f)
 
     # log to stdout
     logging_level = logging.DEBUG if runoptions.verbose else logging.INFO
@@ -406,7 +438,9 @@ def main():
     channel.setFormatter(logging.Formatter('%(levelname)s - %(message)s'))
     root.addHandler(channel)
 
-    # read the file
+    # -------------------------------------------------------------------------
+    #  Read the file
+
     with open(runoptions.dumpfile, encoding='utf8') as filereader:
         data = DictPlus()
         tablefields = {}
@@ -418,27 +452,6 @@ def main():
             # Collect the file data
             data.setdefault(table, [])
             data.get(table).append(row)
-
-            if table == 'milestones':
-                milestone = row
-                milestone['githubtitle'] = '[#{0}] - {1}'.format(milestone['id'], milestone['title'])
-                milestone['assemblakey'] = '[#{0}]'.format(milestone['id'])
-                ASSEMBLA_MILESTONES.append(milestone)
-            elif table == 'tickets':
-                ticket = row
-                ticket['githubtitle'] = '[#{0}] - {1}'.format(ticket['number'], ticket['summary'])
-                ticket['assemblakey'] = '[#{0}]'.format(ticket['number'])
-                ASSEMBLA_TICKETS.append(ticket)
-            elif table == 'ticket_statuses':
-                ticketstatus = row
-                ticketstatus['githubtitle'] = '[#{0}] - {1}'.format(ticketstatus['id'], ticketstatus['name'])
-                ticketstatus['assemblakey'] = '[#{0}]'.format(ticketstatus['id'])
-                ASSEMBLA_TICKET_STATUSES.append(ticketstatus)
-            elif table == 'ticket_comments':
-                ticketcomment = row
-                ticketcomment['assemblakey'] = '[#{0}]'.format(ticketcomment['id'])
-                ticketcomment['createdate'] = datetime.fromisoformat(ticketcomment['created_on']).strftime('%Y-%m-%d %H:%M')
-                ASSEMBLA_TICKET_COMMENTS.append(ticketcomment)
 
     # -------------------------------------------------------------------------
     #  Index the data
@@ -466,58 +479,195 @@ def main():
     # -------------------------------------------------------------------------
     #  UserID scrape
 
-    users = scrapeusers(data)
-    data["_index"]["_users"] = users
-
-    # DEBUG
-    # printtable(users)
+    data["_index"]["_users"] = scrapeusers(data)
 
     # -------------------------------------------------------------------------
-    #  WIKI conversion
-    if wikirepo:
+    # Run the command
 
-        # Open git repo
-        repo = git.Repo(wikirepo)
-        workdir = pathlib.Path(repo.working_tree_dir)
-
-        # Parse the wiki entries (making rich additions to objects in data) and
-        # return the order of wiki pages
-        wikiorder = wikiparser(data)
-
-        # DEBUG
-        # printtable(wikiorder, include=('_level', ))
-
-        # Iterate over each wiki page version in order from old to new and get
-        # the data required for git commit
-        for commit in wikicommitgenerator(data['wiki_page_versions'], wikiorder):
-
-            files = []
-            for name, contents in commit['files'].items():
-                fname = pathlib.Path(workdir, name)
-                fname.write_bytes(contents.encode())
-                files.append(str(fname))
-
-            # Add the files
-            repo.index.add(files)
-
-            actor = git.Actor(commit['author_name'], commit['author_email'])
-            date = commit['date'].astimezone(timezone.utc).replace(tzinfo=None).isoformat()
-
-            print(f"Commiting {commit['name']}")
-            repo.index.commit(
-                commit['message'],
-                author=actor,
-                author_date=date,
-                committer=actor,
-                commit_date=date,
-            )
-
-    # FIXME: The rest of the script is disabled for now
+    runoptions.func(parser, runoptions, auth, data)
     return
 
+
+# -----------------------------------------------------------------------------
+#  Print users
+def cmd_users(parser, runoptions, auth, data):
+    printtable(data["_index"]["_users"])
+
+
+# -----------------------------------------------------------------------------
+#  User scrape from Assembla
+def cmd_userscrape(parser, runoptions, auth, data):
+
+    # Check for required auth fields
+    check_config(auth, parser, ('assembla_key', 'assembla_secret'))
+
+    headers = {
+        'X-Api-Key': auth['assembla_key'],
+        'X-Api-Secret': auth['assembla_secret'],
+    }
+
+    # Fetch all user info
+    out = []
+    for v in data["_index"]["_users"].values():
+
+        # Brute force to ensure to not hit any rate limits
+        time.sleep(0.1)
+
+        print(f"Fetching user '{v['id']}'")
+
+        req = requests.get(
+            f"https://api.assembla.com/v1/users/{v['id']}.json",
+            headers=headers,
+        )
+        if req.status_code != 200:
+            print(f"   Failed to fetch: Error code {req.status_code}")
+            continue
+        jsdata = req.json()
+
+        out.append(jsdata)
+
+    # Save the entries to disk
+    with open(runoptions.userdump, 'w') as f:
+        json.dump(out, f)
+
+
+# -----------------------------------------------------------------------------
+#  List wiki pages
+def cmd_wiki(parser, runoptions, auth, data):
+
+    # Parse the wiki entries (making rich additions to objects in data) and
+    # return the order of wiki pages
+    wikiorder = wikiparser(data)
+
+    printtable(wikiorder)
+
+
+# -----------------------------------------------------------------------------
+#  WIKI scrape from Assembla
+def cmd_wikiscrape(parser, runoptions, auth, data):
+
+    # Check for required auth fields
+    check_config(auth, parser, ('assembla_key', 'assembla_secret'))
+
+    headers = {
+        'X-Api-Key': auth['assembla_key'],
+        'X-Api-Secret': auth['assembla_secret'],
+    }
+
+    # Parse the wiki entries (making rich additions to objects in data) and
+    # return the order of wiki pages
+    wikiorder = wikiparser(data)
+
+    # Fetch all wiki pages
+    out = []
+    for v in wikiorder:
+
+        # Brute force to ensure to not hit any rate limits
+        time.sleep(0.1)
+
+        print(f"Fetching wiki page '{v['page_name']}'")
+
+        req = requests.get(
+            f"https://api.assembla.com/v1/spaces/{v['space_id']}/wiki_pages/{v['id']}/versions.json?per_page=40",
+            headers=headers,
+        )
+        if req.status_code != 200:
+            print(f"   Failed to fetch: Error code {req.status_code}")
+            continue
+        jsdata = req.json()
+
+        out.append(jsdata)
+
+    # Save the entries to disk
+    with open(runoptions.wikidump, 'w') as f:
+        json.dump(out, f)
+
+
+# -----------------------------------------------------------------------------
+#  WIKI conversion
+def cmd_wikiconvert(parser, runoptions, auth, data):
+
+    # Check arguments
+    wikirepo = pathlib.Path(runoptions.repo)
+    if not wikirepo.is_dir():
+        parser.error(f"{str(wikirepo)}: Not a directory")
+
+    # Open git repo
+    repo = git.Repo(wikirepo)
+    workdir = pathlib.Path(repo.working_tree_dir)
+
+    # Parse the wiki entries (making rich additions to objects in data) and
+    # return the order of wiki pages
+    wikiorder = wikiparser(data)
+
+    # DEBUG
+    # printtable(wikiorder, include=('_level', ))
+
+    # Iterate over each wiki page version in order from old to new and get
+    # the data required for git commit
+    for commit in wikicommitgenerator(data['wiki_page_versions'], wikiorder):
+
+        files = []
+        for name, contents in commit['files'].items():
+            fname = pathlib.Path(workdir, name)
+            fname.write_bytes(contents.encode())
+            files.append(str(fname))
+
+        # Add the files
+        repo.index.add(files)
+
+        actor = git.Actor(commit['author_name'], commit['author_email'])
+        date = commit['date'].astimezone(timezone.utc).replace(tzinfo=None).isoformat()
+
+        print(f"Commiting {commit['name']}")
+        repo.index.commit(
+            commit['message'],
+            author=actor,
+            author_date=date,
+            committer=actor,
+            commit_date=date,
+        )
+
+
+# -----------------------------------------------------------------------------
+#  Tickets conversion
+def cmd_tickets(parser, runoptions, auth, data):
+
+    # Check for required auth fields
+    check_config(auth, parser, ('username', 'password'))
+
+    # Parse the dump file data
+    for milestone in data['milestones']:
+        milestone['githubtitle'] = '[#{0}] - {1}'.format(milestone['id'], milestone['title'])
+        milestone['assemblakey'] = '[#{0}]'.format(milestone['id'])
+        ASSEMBLA_MILESTONES.append(milestone)
+
+    for ticket in data['tickets']:
+        ticket['githubtitle'] = '[#{0}] - {1}'.format(ticket['number'], ticket['summary'])
+        ticket['assemblakey'] = '[#{0}]'.format(ticket['number'])
+        ASSEMBLA_TICKETS.append(ticket)
+
+    for ticketstatus in data['ticket_status']:
+        ticketstatus['githubtitle'] = '[#{0}] - {1}'.format(ticketstatus['id'], ticketstatus['name'])
+        ticketstatus['assemblakey'] = '[#{0}]'.format(ticketstatus['id'])
+        ASSEMBLA_TICKET_STATUSES.append(ticketstatus)
+
+    for ticketcomment in data['ticket_comments']:
+        ticketcomment['assemblakey'] = '[#{0}]'.format(ticketcomment['id'])
+        ticketcomment['createdate'] = datetime.fromisoformat(ticketcomment['created_on']).strftime('%Y-%m-%d %H:%M')
+        ASSEMBLA_TICKET_COMMENTS.append(ticketcomment)
+
     # establish github connection
-    ghub = github.Github(runoptions.username, runoptions.password)
-    repo = ghub.get_repo(runoptions.repository)
+    ghub = github.Github(auth['username'], auth['password'])
+
+    for repo in ghub.get_user().get_repos():
+        print(repo.name)
+        repo.edit(has_wiki=False)
+        # to see all the available attributes and methods
+        print(dir(repo))
+    return
+
+    repo = ghub.get_repo(runoptions.repo)
     GITHUB_ISSUES = [x for x in repo.get_issues()]
     GITHUB_MILESTONES = [x for x in repo.get_milestones()]
     GITHUB_USERS = [x for x in repo.get_collaborators()]

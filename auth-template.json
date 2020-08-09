@@ -1,0 +1,6 @@
+{
+    "username": "GitHub username",
+    "password": "GitHub password (use personal access token)",
+    "assembla_key": "Assembla API Key",
+    "assembla_secret": "Assembla API Secret"
+}
