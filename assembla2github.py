@@ -12,6 +12,8 @@ from pprint import pprint
 import requests
 import time
 import github
+import re
+import itertools
 
 # map your assembla ticket statuses to Open or Closed here.
 ASSEMBLA_TICKET_STATUS_TO_GITHUB_ISSUE_STATUS = {
@@ -265,7 +267,7 @@ def wikiparser(data):
     # wiki_page_id      ID to wiki page
     # user_id           User making the change
     # version           Page revision number
-    # contents          None for all
+    # contents          None for all (merged with data from wikidump)
     # change_comment    Commit msg of change
     # created_at        Date for first version
     # updated_at        Date for this version
@@ -309,7 +311,66 @@ def wikiparser(data):
     return list(_wikitraverse(wikitree[None]))
 
 
+def mergewikidump(wikidata, wiki_page_versions):
+    """
+    Merge incoming wikidata with the main data dict
+    :param wikidata: imported wiki page dataset from file fetched with wikidump
+    :param wiki_page_versions: dict of all wiki page version which the data will be
+                               inserted into.
+    """
+
+    # Data is arranged as [PAGE1,PAGE2,...] where PAGE is [VER1,VER2,...]
+    # which itertools.chain() will flatten
+    for v in itertools.chain(*wikidata):
+        # Get the corresponding wiki page data from the dump
+        w = wiki_page_versions.get(v['id'])
+        if not w:
+            logging.warning(f"Skipping wiki page '{v['id']}'. Not found in main dump file")
+            continue
+
+        # Ensure the data contains the same keys
+        vkeys = set(v.keys())
+        wkeys = set(w.keys())
+
+        k = vkeys.difference(wkeys)
+        if k:
+            logging.warning(f"Wiki page '{v['id']}' contains keys not in main dump file {k}")
+        k = wkeys.difference(vkeys)
+        if k:
+            logging.warning(f"Wiki page '{v['id']}' missing keys {k}")
+
+        for k in v:
+            if k in ('contents', ):
+                continue
+            left, right = v[k], w[k]
+            if k in ('created_at', 'updated_at'):
+                if left.endswith('Z'):
+                    left = left[:-1] + '+00:00'
+            if left != right:
+                logging.warning(f"Difference in key '{k}' for '{v['id']}': '{left}' vs '{right}'")
+
+        # Get the page contents
+        contents = v.get('contents')
+        if not contents:
+            logging.warning(f"Wiki page '{v['id']}' missing 'contents'")
+            continue
+
+        # Update the wiki page data
+        w['contents'] = contents
+        w['_merged'] = True
+
+    # Print all pages that have missing data after load
+    missing = [v['id'] for v in wiki_page_versions.values() if '_merged' not in v]
+    logging.warning(f"Missing wiki contents data for {missing}")
+
+
 def wikicommitgenerator(wikiversions, order):
+    """
+    A generator producing a dict of git commits data containing wiki edits
+    """
+
+    # Make a set of all pages
+    page_names = set(v['page_name'] for v in order)
 
     for v in sorted(wikiversions, key=lambda v: v['_updated_at']):
         p = v['_wiki_page_id']
@@ -325,7 +386,7 @@ def wikicommitgenerator(wikiversions, order):
             'name': p['page_name'] + ':' + str(v['version']),
             'files': {
                 '_Sidebar.md': wikiindexproducer(indexpages),
-                fname: getwikiblob(v),
+                fname: getwikiblob(v, page_names),
             },
             'author_name': author.get('name', author.get('id')),
             'author_email': author.get('email', 'none@localhost'),
@@ -334,23 +395,72 @@ def wikicommitgenerator(wikiversions, order):
         }
 
 
-def getwikiblob(wikiobj):
+# To find old headers. Variants:
+#  .h1 Title  .h2 Title
+RE_HEADING = re.compile(r'^h(\d). ', re.M)
+
+# To find [[links]]. Variants:
+#   [[Wiki]]  [[Wiki|Printed name]]  [[url:someurl]]  [[url:someurl|Printed name]]
+# 1=prefix:, 2=first group, 3=| second group, 4=second group bare
+RE_LINK = re.compile(r'\[\[(\w+?:)?(.+?)(\|(.+?))?\]\]', re.M)
+
+
+def getwikiblob(wikiobj, page_names):
+    """
+    Get the contents blob for the wiki and convert it to githubs formatting
+    """
     v = wikiobj
     p = v['_wiki_page_id']
-    a = v['_user_id']
-    name = a.get('name', a.get('id'))
-    return f'''
-# {p['page_name']}
+    name = p['page_name'] + ':' + str(v['version'])
 
-This is revision {v['version']} by {name} at {v['_updated_at']}.
+    # Nothing to do with no contents
+    contents = v['contents']
+    if not contents:
+        return None
 
-## Placeholder page
-'''
+    # print("\n\n************************************************************")
+    # print(f"Page '{p['page_name']}:{v['version']}'")
+
+    # Replacing .h1 .h2 headers
+    contents = RE_HEADING.sub(lambda m: '#' * int(m[1]) + ' ', contents)
+
+    # Replacing [[links]]
+    def _link(m):
+        """ Link formatter replace callback """
+        if not m[1]:
+            # Is a wiki link
+            m2 = m[2]
+            # Special fixups
+            if m2 == 'tips/index':
+                m2 = 'Tips'
+            if m2 == 'platforms/index':
+                m2 = 'Platforms'
+            if m2 not in page_names:
+                logging.warning(f"Wiki links to unknown page '{m2}' in '{name}'")
+            if not m[4]:
+                # Bare wiki link
+                return f"[[{m2}]]"
+            # Wiki link with name
+            return f"[[{m[4].strip()}|{m2}]]"
+        if m[1] == 'url:':
+            # Plain link
+            if not m[4]:
+                return f"{m[2]}"
+            # Link with name
+            return f"[{m[4].strip()}]({m[2]})"
+        # Fallthrough
+        logging.warning(f"Unknown wiki link '{m[1]}'")
+        return f"[[{m[1] or ''}{m[2] or ''}{m[3] or ''}]]"
+    contents = RE_LINK.sub(_link, contents)
+
+    return contents
 
 
 def wikiindexproducer(index):
+    """ Produce the index menu """
 
-    out = '''**PortAudio**
+    out = '''# PortAudio
+
 '''
     for v in index:
         out += ('  ' * v['_level']) + f"* [[{v['page_name']}]]\n"
@@ -381,6 +491,26 @@ def scrapeusers(data):
     return users
 
 
+def mergeuserdump(userdata, users):
+    """
+    Merge incoming user data with the main data dict
+    :param userdata: imported user data from file fetched with userdump
+    :param users: dict of all users which the imported data will update
+    """
+
+    for v in userdata:
+        w = users.get(v['id'])
+        if not w:
+            logging.warning(f"Skipping user '{v['id']}'. Not found in main dump file")
+            continue
+
+        w.update(v)
+        w['_merged'] = True
+
+    missing = [v['id'] for v in users.values() if '_merged' not in v]
+    logging.warning(f"Missing user data for {missing}")
+
+
 def check_config(auth, parser, required):
 
     # Ensure we have auth data and the fields needed
@@ -395,13 +525,15 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--verbose', '-v', required=False, default=False, help='verbose logging')
     parser.add_argument('--dumpfile', '-f', metavar="FILE", required=True, help='assembla dumpfile')
+    parser.add_argument('--wikidump', '-w', metavar="FILE", help="wiki dumpfile")
+    parser.add_argument('--userdump', '-u', metavar="FILE", help="user dumpfile")
     parser.add_argument('--auth', '-a', help='Authentication config')
-    subparser = parser.add_subparsers(title="command", help="Command to execute")
+    subparser = parser.add_subparsers(dest="command", required=True, title="command", help="Command to execute")
 
     # Disabled for now
-    #subcmd = subparser.add_parser('tickets', help="Convert tickets to GitHub repo")
-    #subcmd.add_argument('repo', help="GitHub repository")
-    #subcmd.set_defaults(func=cmd_tickets)
+    # subcmd = subparser.add_parser('tickets', help="Convert tickets to GitHub repo")
+    # subcmd.add_argument('repo', help="GitHub repository")
+    # subcmd.set_defaults(func=cmd_tickets)
 
     subcmd = subparser.add_parser('users', help="List users")
     subcmd.set_defaults(func=cmd_users)
@@ -439,8 +571,9 @@ def main():
     root.addHandler(channel)
 
     # -------------------------------------------------------------------------
-    #  Read the file
+    #  Read the dump file
 
+    logging.info(f"Parsing dumpfile '{runoptions.dumpfile}'")
     with open(runoptions.dumpfile, encoding='utf8') as filereader:
         data = DictPlus()
         tablefields = {}
@@ -455,6 +588,8 @@ def main():
 
     # -------------------------------------------------------------------------
     #  Index the data
+
+    logging.info("Creating data index")
 
     # Store the fields for the tables
     data['_fields'] = tablefields
@@ -477,15 +612,41 @@ def main():
     })
 
     # -------------------------------------------------------------------------
+    #  Read the wiki dump data
+
+    if runoptions.wikidump:
+
+        logging.info(f"Parsing wiki dumpfile '{runoptions.wikidump}'")
+
+        with open(runoptions.wikidump, encoding='utf8') as filereader:
+            wikidata = json.load(filereader)
+
+        mergewikidump(wikidata, data['_index']['wiki_page_versions'])
+
+    # -------------------------------------------------------------------------
     #  UserID scrape
+
+    logging.info(f"Scraping for user ID")
 
     data["_index"]["_users"] = scrapeusers(data)
 
     # -------------------------------------------------------------------------
+    #  Read the user dump data
+
+    if runoptions.userdump:
+
+        logging.info(f"Parsing user dumpfile '{runoptions.userdump}'")
+
+        with open(runoptions.userdump, encoding='utf8') as filereader:
+            userdata = json.load(filereader)
+
+        mergeuserdump(userdata, data['_index']['_users'])
+
+    # -------------------------------------------------------------------------
     # Run the command
 
+    logging.info(f"Executing command '{runoptions.command}'")
     runoptions.func(parser, runoptions, auth, data)
-    return
 
 
 # -----------------------------------------------------------------------------
@@ -513,14 +674,14 @@ def cmd_userscrape(parser, runoptions, auth, data):
         # Brute force to ensure to not hit any rate limits
         time.sleep(0.1)
 
-        print(f"Fetching user '{v['id']}'")
+        logging.info(f"Fetching user '{v['id']}'")
 
         req = requests.get(
             f"https://api.assembla.com/v1/users/{v['id']}.json",
             headers=headers,
         )
         if req.status_code != 200:
-            print(f"   Failed to fetch: Error code {req.status_code}")
+            logging.error(f"   Failed to fetch: Error code {req.status_code}")
             continue
         jsdata = req.json()
 
@@ -565,14 +726,14 @@ def cmd_wikiscrape(parser, runoptions, auth, data):
         # Brute force to ensure to not hit any rate limits
         time.sleep(0.1)
 
-        print(f"Fetching wiki page '{v['page_name']}'")
+        logging.info(f"Fetching wiki page '{v['page_name']}'")
 
         req = requests.get(
             f"https://api.assembla.com/v1/spaces/{v['space_id']}/wiki_pages/{v['id']}/versions.json?per_page=40",
             headers=headers,
         )
         if req.status_code != 200:
-            print(f"   Failed to fetch: Error code {req.status_code}")
+            logging.error(f"   Failed to fetch: Error code {req.status_code}")
             continue
         jsdata = req.json()
 
@@ -609,6 +770,9 @@ def cmd_wikiconvert(parser, runoptions, auth, data):
 
         files = []
         for name, contents in commit['files'].items():
+            if not contents:
+                logging.warning(f"Missing page data for {commit['name']}")
+                continue
             fname = pathlib.Path(workdir, name)
             fname.write_bytes(contents.encode())
             files.append(str(fname))
@@ -619,7 +783,7 @@ def cmd_wikiconvert(parser, runoptions, auth, data):
         actor = git.Actor(commit['author_name'], commit['author_email'])
         date = commit['date'].astimezone(timezone.utc).replace(tzinfo=None).isoformat()
 
-        print(f"Commiting {commit['name']}")
+        logging.info(f"Commiting {commit['name']}")
         repo.index.commit(
             commit['message'],
             author=actor,
@@ -659,13 +823,6 @@ def cmd_tickets(parser, runoptions, auth, data):
 
     # establish github connection
     ghub = github.Github(auth['username'], auth['password'])
-
-    for repo in ghub.get_user().get_repos():
-        print(repo.name)
-        repo.edit(has_wiki=False)
-        # to see all the available attributes and methods
-        print(dir(repo))
-    return
 
     repo = ghub.get_repo(runoptions.repo)
     GITHUB_ISSUES = [x for x in repo.get_issues()]
