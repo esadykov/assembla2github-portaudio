@@ -1,6 +1,6 @@
 {
-    "username": "GitHub username",
-    "password": "GitHub password (use personal access token)",
-    "assembla_key": "Assembla API Key",
-    "assembla_secret": "Assembla API Secret"
+    "username": "**replace with GitHub username**",
+    "password": "**replace with GitHub password (use personal access token)**",
+    "assembla_key": "**replace with Assembla API Key**",
+    "assembla_secret": "**replace with Assembla API Secret**"
 }

@@ -516,7 +516,10 @@ def check_config(auth, parser, required):
     # Ensure we have auth data and the fields needed
     if not auth:
         parser.error("Authentication config --auth is required")
-    missing = [k for k in required if k not in auth]
+    missing = [
+        k for k in required
+        if k not in auth or not auth[k] or (auth[k].startswith('**') and auth[k].endswith('**'))
+    ]
     if missing:
         parser.error(f"Missing auth fields: {' '.join(missing)}")
 
@@ -539,7 +542,7 @@ def main():
     subcmd.set_defaults(func=cmd_users)
 
     subcmd = subparser.add_parser('userscrape', help="Scrape users from Assembla")
-    subcmd.add_argument('userdump', help="Output file to store users scrape")
+    subcmd.add_argument('dump', help="Output file to store users scrape")
     subcmd.set_defaults(func=cmd_userscrape)
 
     subcmd = subparser.add_parser('wiki', help="List wiki pages")
@@ -550,7 +553,7 @@ def main():
     subcmd.set_defaults(func=cmd_wikiconvert)
 
     subcmd = subparser.add_parser('wikiscrape', help="Scrape wiki from Assembla")
-    subcmd.add_argument('wikidump', help="Output file to store wiki scrape")
+    subcmd.add_argument('dump', help="Output file to store wiki scrape")
     subcmd.set_defaults(func=cmd_wikiscrape)
 
     runoptions = parser.parse_args()
@@ -688,7 +691,7 @@ def cmd_userscrape(parser, runoptions, auth, data):
         out.append(jsdata)
 
     # Save the entries to disk
-    with open(runoptions.userdump, 'w') as f:
+    with open(runoptions.dump, 'w') as f:
         json.dump(out, f)
 
 
@@ -740,7 +743,7 @@ def cmd_wikiscrape(parser, runoptions, auth, data):
         out.append(jsdata)
 
     # Save the entries to disk
-    with open(runoptions.wikidump, 'w') as f:
+    with open(runoptions.dump, 'w') as f:
         json.dump(out, f)
 
 
