@@ -38,6 +38,12 @@ ASSEMBLA_USERID = {
     # 'user_id': { 'name': '', 'email': '' },
 }
 
+# Settings for Wiki conversions
+WIKI_FIXUP_AUTHOR_NAME = "Wiki converter"
+WIKI_FIXUP_AUTHOR_EMAIL = "none@localhost"
+WIKI_FIXUP_MESSAGE = "Updated Wiki to GitHub formatting"
+WIKI_UNKNOWN_EMAIL = "none@localhost"
+
 ASSEMBLA_MILESTONES = []
 ASSEMBLA_TICKETS = []
 ASSEMBLA_TICKET_STATUSES = []
@@ -369,8 +375,9 @@ def wikicommitgenerator(wikiversions, order):
     A generator producing a dict of git commits data containing wiki edits
     """
 
-    # Make a set of all pages
-    page_names = set(v['page_name'] for v in order)
+    # Collect all the latest current versions of the wiki pages
+    pages = {}
+    missing_authors = set()
 
     for v in sorted(wikiversions, key=lambda v: v['_updated_at']):
         p = v['_wiki_page_id']
@@ -382,78 +389,95 @@ def wikicommitgenerator(wikiversions, order):
         fname = p['page_name'] + '.md'
         author = v['_user_id']
 
+        # Warn if we don't have the data for the user
+        if v['user_id'] not in missing_authors and (not author.get('name') or not author.get('email')):
+            logging.warning(f"Missing name or email for user '{v['user_id']}'")
+            missing_authors.add(v['user_id'])
+
+        pages[fname] = v['contents'] or None
+
         yield {
             'name': p['page_name'] + ':' + str(v['version']),
             'files': {
                 '_Sidebar.md': wikiindexproducer(indexpages),
-                fname: getwikiblob(v, page_names),
+                fname: v['contents'] or None,
             },
             'author_name': author.get('name', author.get('id')),
-            'author_email': author.get('email', 'none@localhost'),
-            'date': now,
+            'author_email': author.get('email', WIKI_UNKNOWN_EMAIL),
             'message': v['change_comment'] or '',
+            'date': now,
+        }
+
+    # Convert the repo to GitHub format
+    files = wikimigrate(pages, set(v['page_name'] for v in order))
+    if files:
+        yield {
+            'name': 'ALL',
+            'files': files,
+            'author_name': WIKI_FIXUP_AUTHOR_NAME,
+            'author_email': WIKI_FIXUP_AUTHOR_EMAIL,
+            'message': WIKI_FIXUP_MESSAGE,
+            'date': datetime.now().replace(microsecond=0),
         }
 
 
-# To find old headers. Variants:
-#  .h1 Title  .h2 Title
-RE_HEADING = re.compile(r'^h(\d). ', re.M)
-
-# To find [[links]]. Variants:
-#   [[Wiki]]  [[Wiki|Printed name]]  [[url:someurl]]  [[url:someurl|Printed name]]
-# 1=prefix:, 2=first group, 3=| second group, 4=second group bare
-RE_LINK = re.compile(r'\[\[(\w+?:)?(.+?)(\|(.+?))?\]\]', re.M)
-
-
-def getwikiblob(wikiobj, page_names):
+def wikimigrate(pages, page_names):
     """
-    Get the contents blob for the wiki and convert it to githubs formatting
+    Convert the wiki page to the GitHub format
     """
-    v = wikiobj
-    p = v['_wiki_page_id']
-    name = p['page_name'] + ':' + str(v['version'])
 
-    # Nothing to do with no contents
-    contents = v['contents']
-    if not contents:
-        return None
+    # To find old headers. Variants:
+    #   .h1 Title  .h2 Title
+    re_heading = re.compile(r'^h(\d). ', re.M)
 
-    # print("\n\n************************************************************")
-    # print(f"Page '{p['page_name']}:{v['version']}'")
+    # To find [[links]]. Variants:
+    #   [[Wiki]]  [[Wiki|Printed name]]  [[url:someurl]]  [[url:someurl|Printed name]]
+    # 1=prefix:, 2=first group, 3=| second group, 4=second group
+    re_link = re.compile(r'\[\[(\w+?:)?(.+?)(\|(.+?))?\]\]', re.M)
 
-    # Replacing .h1 .h2 headers
-    contents = RE_HEADING.sub(lambda m: '#' * int(m[1]) + ' ', contents)
+    files = {}
+    for k, v in pages.items():
+        if not v:
+            continue
+        contents = v
 
-    # Replacing [[links]]
-    def _link(m):
-        """ Link formatter replace callback """
-        if not m[1]:
-            # Is a wiki link
-            m2 = m[2]
-            # Special fixups
-            if m2 == 'tips/index':
-                m2 = 'Tips'
-            if m2 == 'platforms/index':
-                m2 = 'Platforms'
-            if m2 not in page_names:
-                logging.warning(f"Wiki links to unknown page '{m2}' in '{name}'")
-            if not m[4]:
-                # Bare wiki link
-                return f"[[{m2}]]"
-            # Wiki link with name
-            return f"[[{m[4].strip()}|{m2}]]"
-        if m[1] == 'url:':
-            # Plain link
-            if not m[4]:
-                return f"{m[2]}"
-            # Link with name
-            return f"[{m[4].strip()}]({m[2]})"
-        # Fallthrough
-        logging.warning(f"Unknown wiki link '{m[1]}'")
-        return f"[[{m[1] or ''}{m[2] or ''}{m[3] or ''}]]"
-    contents = RE_LINK.sub(_link, contents)
+        # Replacing .h1 .h2 headers
+        contents = re_heading.sub(lambda m: '#' * int(m[1]) + ' ', contents)
 
-    return contents
+        # Replacing [[links]]
+        def _link(m):
+            """ Link formatter replace callback """
+            if not m[1]:
+                # Is a wiki link
+                m2 = m[2]
+                # Special fixups
+                if m2 == 'tips/index':
+                    m2 = 'Tips'
+                if m2 == 'platforms/index':
+                    m2 = 'Platforms'
+                if m2 not in page_names:
+                    logging.warning(f"Wiki links to unknown page '{m2}' in '{name}'")
+                if not m[4]:
+                    # Bare wiki link
+                    return f"[[{m2}]]"
+                # Wiki link with name
+                return f"[[{m[4].strip()}|{m2}]]"
+            if m[1] == 'url:':
+                # Plain link
+                if not m[4]:
+                    return f"{m[2]}"
+                # Link with name
+                return f"[{m[4].strip()}]({m[2]})"
+            # Fallthrough
+            logging.warning(f"Unknown wiki link '{m[1]}'")
+            return f"[[{m[1] or ''}{m[2] or ''}{m[3] or ''}]]"
+        contents = re_link.sub(_link, contents)
+
+        if contents == v:
+            continue
+        files[k] = contents
+
+    return files
 
 
 def wikiindexproducer(index):
@@ -786,7 +810,6 @@ def cmd_wikiconvert(parser, runoptions, auth, data):
         actor = git.Actor(commit['author_name'], commit['author_email'])
         date = commit['date'].astimezone(timezone.utc).replace(tzinfo=None).isoformat()
 
-        logging.info(f"Commiting {commit['name']}")
         repo.index.commit(
             commit['message'],
             author=actor,
