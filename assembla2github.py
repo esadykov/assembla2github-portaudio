@@ -8,12 +8,15 @@ import sys
 import git
 import pathlib
 from tabulate import tabulate
-from pprint import pprint
 import requests
 import time
 import github
 import re
 import itertools
+import colorama
+
+# Ensure colored output on win32 platforms
+colorama.init()
 
 # map your assembla ticket statuses to Open or Closed here.
 ASSEMBLA_TICKET_STATUS_TO_GITHUB_ISSUE_STATUS = {
@@ -33,9 +36,12 @@ ASSEMBLA_USERID_TO_GITHUB_USERID = {
     'ZZZ': 'User3',
 }
 
-# New mapping from assembla to generic name email ID
+# User mapping from assembla to github
+#   - login: Assembla user name. Used to match tickets "assigned to" fields
+#   - name: Presented name. Used for wiki git commits and tickets (if no github id exists)
+#   - email: Used for wiki git commits
+#   - github: GitHub user name. Used for tickets as @mentions
 ASSEMBLA_USERID = {
-    # 'user_id': { 'name': '', 'email': '' },
 }
 
 # Settings for Wiki conversions
@@ -53,14 +59,35 @@ GITHUB_USERS = []
 GITHUB_MILESTONES = []
 
 
+class UnsetMeta(type):
+    def __repr__(self):
+        return "<Unset>"
+
+
+class Unset(metaclass=UnsetMeta):
+    """ Unset class """
+
+
 # Inheriting dict isn't recommended, but this is a small mixin so it is probably ok for this use
 class DictPlus(dict):
     """ dict mixin class with extra convenience methods """
 
-    def find(self, table, id, default='__unset__'):
-        if default != '__unset__':
-            return self['_index'][table].get(id, default)
-        return self['_index'][table][id]
+    def find(self, table, id, default=Unset):
+        if default is Unset:
+            return self['_index'][table][id]
+        return self['_index'][table].get(id, default)
+
+
+def nameorid(user):
+    """ Return the name or the id of the user """
+    return user.get('name', user.get('id'))
+
+
+def githubuser(user):
+    """ Return the github user if present, otherwise return the name or id """
+    if 'github' in user:
+        return f"@{user['github']}"
+    return user.get('name', user.get('id'))
 
 
 def transpose(data, keys=None):
@@ -81,7 +108,7 @@ def transpose(data, keys=None):
     return {k: transposed[i] for i, k in enumerate(keys)}
 
 
-def printtable(data, keys=None, exclude=None, include=None, filter=None):
+def printtable(data, keys=None, exclude=None, include=None, filter=None, slice=None):
     """
     Print the data formatted in tables.
     :param data: Dict or list containing rows.
@@ -89,11 +116,14 @@ def printtable(data, keys=None, exclude=None, include=None, filter=None):
     :param exclude: List of keys to omit from output
     :param include: List of keys to include in output
     :param filter: Callback function fn(row) to filter rows to print
+    :param slice: Pass a slice object to limit the number of lines
     """
     if isinstance(data, dict):
         data = list(data.values())
     if filter:
         data = [v for v in data if filter(v)]
+    if slice:
+        data = data[slice]
     data = transpose(data, keys)
     if not exclude:
         exclude = []
@@ -175,7 +205,7 @@ def filereadertoassemblaobjectgenerator(filereader, fieldmap):
         yield (linenum, line, table, row)
 
 
-def genindex(data, keymap):
+def indexassembladata(data, keymap):
     """
     Convert each table in data dict from list of rows to dict indexed by key
     specified in keymap.
@@ -185,7 +215,7 @@ def genindex(data, keymap):
     """
 
     # keymap[None] contains the default key field name
-    default = keymap[None]
+    default = keymap.get(None)
 
     index = {}
     for table, objects in data.items():
@@ -216,36 +246,17 @@ def wikiparser(data):
 
     # wiki_pages
     # ==========
-    # id                Wiki page ID
-    # space_id          Same for all
-    # parent_id         Wiki page ID of parent
-    # user_id           User ID
-    # contents          None for all
-    # wiki_format       1, 2 or None
-    # status            1=active, 2=archived
-    # version           Page edit version, 1=first
-    # position          Order of items
-    # page_name         Title of page
-    # change_comment    Commit msg of change
-    # created_at        Date for first version
-    # updated_at        Date for last version
-    # ===========
-    # _user_id          Reference to user_id object
-    # _parent_id        Reference to parent object
-    # _children         List of children of this node
-    # _created_at       Date object
-    # _updated_at       Date object
-    # _level            Wiki level, 0=top-level
-
+    #   change_comment, contents, created_at, id, page_name, parent_id, position, space_id, status,
+    #   updated_at, user_id, version, wiki_format
     wikitree = {}
     for v in data['wiki_pages']:
 
         # Add the reference to the parent and children
-        v['_parent_id'] = data.find('wiki_pages', v['parent_id'], None)
+        # v['_parent'] = data.find('wiki_pages', v['parent_id'], None)
         v.setdefault('_children', [])
 
         # Add the reference to the user
-        v['_user_id'] = data.find('_users', v['user_id'])
+        v['_user'] = data.find('_users', v['user_id'])
 
         # Convert dates
         v['_created_at'] = datetime.fromisoformat(v['created_at'])
@@ -267,38 +278,23 @@ def wikiparser(data):
     # DEBUG
     # printtable(data['wiki_pages'], include=('_level', ))
 
-    # wiki_page_versions
-    # ==================
-    # id                Numerical ID for this change
-    # wiki_page_id      ID to wiki page
-    # user_id           User making the change
-    # version           Page revision number
-    # contents          None for all (merged with data from wikidump)
-    # change_comment    Commit msg of change
-    # created_at        Date for first version
-    # updated_at        Date for this version
-    # ===========
-    # _blob_id          The blob for the page
-    # _wiki_page_id     Reference to the Wiki object
-    # _created_at       Date object
-    # _updated_at       Date object
-    # _user_id          Reference to user_id object
-
     # wiki_page_blobs
     # ===============
-    # version_id        ID to the id field in 'wiki_page_versions'
-    # blob_id           Blob ID
+    #    blob_id, version_id
 
+    # wiki_page_versions
+    # ==================
+    #   change_comment, contents, created_at, id, updated_at, user_id, version, wiki_page_id
     for v in data['wiki_page_versions']:
 
         # Add reference to the blob
-        v['_blob_id'] = data.find('wiki_page_blobs', v['id']).get('blob_id')
+        # v['_blob_id'] = data.find('wiki_page_blobs', v['id']).get('blob_id')
 
         # Add reference to the wiki page object
-        v['_wiki_page_id'] = data.find('wiki_pages', v['wiki_page_id'])
+        v['_wiki_page'] = data.find('wiki_pages', v['wiki_page_id'])
 
         # Add the user
-        v['_user_id'] = data.find('_users', v['user_id'])
+        v['_user'] = data.find('_users', v['user_id'])
 
         # Convert dates
         v['_created_at'] = datetime.fromisoformat(v['created_at'])
@@ -317,7 +313,7 @@ def wikiparser(data):
     return list(_wikitraverse(wikitree[None]))
 
 
-def mergewikidump(wikidata, wiki_page_versions):
+def mergewikidata(wikidata, wiki_page_versions):
     """
     Merge incoming wikidata with the main data dict
     :param wikidata: imported wiki page dataset from file fetched with wikidump
@@ -327,7 +323,9 @@ def mergewikidump(wikidata, wiki_page_versions):
 
     # Data is arranged as [PAGE1,PAGE2,...] where PAGE is [VER1,VER2,...]
     # which itertools.chain() will flatten
+    count = 0
     for v in itertools.chain(*wikidata):
+        count += 1
         # Get the corresponding wiki page data from the dump
         w = wiki_page_versions.get(v['id'])
         if not w:
@@ -367,7 +365,10 @@ def mergewikidump(wikidata, wiki_page_versions):
 
     # Print all pages that have missing data after load
     missing = [v['id'] for v in wiki_page_versions.values() if '_merged' not in v]
-    logging.warning(f"Missing wiki contents data for {missing}")
+    if missing:
+        logging.warning(f"Missing wiki contents data for {missing}")
+
+    logging.info(f"    Found {count} wiki page entries")
 
 
 def wikicommitgenerator(wikiversions, order):
@@ -380,14 +381,14 @@ def wikicommitgenerator(wikiversions, order):
     missing_authors = set()
 
     for v in sorted(wikiversions, key=lambda v: v['_updated_at']):
-        p = v['_wiki_page_id']
+        p = v['_wiki_page']
         now = v['_updated_at']
 
         # Make ordered list of wiki pages that are present at this time
         indexpages = filter(lambda w: w['_created_at'] <= now and w['status'] == 1, order)
 
         fname = p['page_name'] + '.md'
-        author = v['_user_id']
+        author = v['_user']
 
         # Warn if we don't have the data for the user
         if v['user_id'] not in missing_authors and (not author.get('name') or not author.get('email')):
@@ -402,7 +403,7 @@ def wikicommitgenerator(wikiversions, order):
                 '_Sidebar.md': wikiindexproducer(indexpages),
                 fname: v['contents'] or None,
             },
-            'author_name': author.get('name', author.get('id')),
+            'author_name': nameorid(author),
             'author_email': author.get('email', WIKI_UNKNOWN_EMAIL),
             'message': v['change_comment'] or '',
             'date': now,
@@ -456,7 +457,7 @@ def wikimigrate(pages, page_names):
                 if m2 == 'platforms/index':
                     m2 = 'Platforms'
                 if m2 not in page_names:
-                    logging.warning(f"Wiki links to unknown page '{m2}' in '{name}'")
+                    logging.warning(f"Wiki links to unknown page '{m2}'")
                 if not m[4]:
                     # Bare wiki link
                     return f"[[{m2}]]"
@@ -496,43 +497,54 @@ def scrapeusers(data):
     Find all users reference in all tables
     """
 
-    # Copy the user database
+    # Copy the predefined user database
     users = {k: v.copy() for k, v in ASSEMBLA_USERID.items()}
 
     for table, entries in data.items():
         if table.startswith('_'):
             continue
         for v in entries:
-            if 'user_id' in v:
-                uid = v['user_id']
-                if not uid:
-                    continue
-                u = users.setdefault(uid, {})
-                u.setdefault('id', uid)
-                u.setdefault('tables', set())
-                u['tables'].add(table)
+            for t in ('user_id', 'created_by', 'updated_by', 'reporter_id', 'assigned_to_id'):
+                if t in v:
+                    uid = v[t]
+                    if not uid:
+                        continue
+                    u = users.setdefault(uid, {})
+                    u.setdefault('id', uid)
+                    u.setdefault('tables', set())
+                    u['tables'].add(table)
 
     return users
 
 
-def mergeuserdump(userdata, users):
+def mergeuserdata(userdata, users):
     """
     Merge incoming user data with the main data dict
     :param userdata: imported user data from file fetched with userdump
     :param users: dict of all users which the imported data will update
     """
 
+    count = 0
     for v in userdata:
+        count += 1
         w = users.get(v['id'])
         if not w:
-            logging.warning(f"Skipping user '{v['id']}'. Not found in main dump file")
+            logging.warning(f"Skipping user '{v['id']}'. Not mentioned in main dump file")
             continue
+
+        # The redacted emails in file will interfere with preset emails. Its better to remove
+        # it altogether
+        if v.get('email') == 'name@domain':
+            del v['email']
 
         w.update(v)
         w['_merged'] = True
 
     missing = [v['id'] for v in users.values() if '_merged' not in v]
-    logging.warning(f"Missing user data for {missing}")
+    if missing:
+        logging.warning(f"Missing user data for {missing}")
+
+    logging.info(f"    Found {count} user entries")
 
 
 def check_config(auth, parser, required):
@@ -548,32 +560,52 @@ def check_config(auth, parser, required):
         parser.error(f"Missing auth fields: {' '.join(missing)}")
 
 
+class ColorFormatter(logging.Formatter):
+    """ Logger for formatting colored console output """
+    def format(self, record):
+        # Replace the original format with one customized by logging level
+        self._style._fmt = {
+            logging.ERROR: f'{colorama.Fore.RED}%(levelname)s:{colorama.Style.RESET_ALL} %(msg)s',
+            logging.WARNING: f'{colorama.Fore.YELLOW}%(levelname)s:{colorama.Style.RESET_ALL} %(msg)s',
+        }.get(record.levelno, '%(levelname)s: %(msg)s')
+        return super().format(record)
+
+
+# -----------------------------------------------------------------------------
+#  MAIN
+#
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--verbose', '-v', required=False, default=False, help='verbose logging')
+    parser.add_argument('--verbose', '-v', action="count", default=0, help='verbose logging')
     parser.add_argument('--dumpfile', '-f', metavar="FILE", required=True, help='assembla dumpfile')
     parser.add_argument('--wikidump', '-w', metavar="FILE", help="wiki dumpfile")
     parser.add_argument('--userdump', '-u', metavar="FILE", help="user dumpfile")
     parser.add_argument('--auth', '-a', help='Authentication config')
     subparser = parser.add_subparsers(dest="command", required=True, title="command", help="Command to execute")
 
-    # Disabled for now
-    # subcmd = subparser.add_parser('tickets', help="Convert tickets to GitHub repo")
-    # subcmd.add_argument('repo', help="GitHub repository")
-    # subcmd.set_defaults(func=cmd_tickets)
+    subcmd = subparser.add_parser('dump', help="Dump assembla tables")
+    subcmd.add_argument('table', nargs='?', help="Table to dump")
+    subcmd.add_argument('--headers', action="store_true", help="Dump header fields")
+    subcmd.add_argument('--include', '-i', action="append", help="Fields to include")
+    subcmd.add_argument('--exclude', '-x', action="append", help="Fields to exclude")
+    subcmd.add_argument('--limit', '-l', type=int, help="Limit the number of lines")
+    subcmd.set_defaults(func=cmd_dump)
 
-    subcmd = subparser.add_parser('users', help="List users")
-    subcmd.set_defaults(func=cmd_users)
+    subcmd = subparser.add_parser('lsusers', help="List users")
+    subcmd.add_argument('--table', '-t', action="append", help="Show only users from this table")
+    subcmd.set_defaults(func=cmd_lsusers)
+
+    subcmd = subparser.add_parser('lswiki', help="List wiki pages")
+    subcmd.add_argument('--changes', action="store_true", help="Show page changes")
+    subcmd.set_defaults(func=cmd_lswiki)
 
     subcmd = subparser.add_parser('userscrape', help="Scrape users from Assembla")
     subcmd.add_argument('dump', help="Output file to store users scrape")
     subcmd.set_defaults(func=cmd_userscrape)
 
-    subcmd = subparser.add_parser('wiki', help="List wiki pages")
-    subcmd.set_defaults(func=cmd_wiki)
-
     subcmd = subparser.add_parser('wikiconvert', help="Convert to GitHub wiki repo")
     subcmd.add_argument('repo', help='cloned git wiki repo directory')
+    subcmd.add_argument('--dry-run', '-n', action="store_true", help="Do not commit any data")
     subcmd.set_defaults(func=cmd_wikiconvert)
 
     subcmd = subparser.add_parser('wikiscrape', help="Scrape wiki from Assembla")
@@ -582,20 +614,24 @@ def main():
 
     runoptions = parser.parse_args()
 
-    # Read JSON auth configuration file
-    auth = {}
-    if runoptions.auth:
-        with open(runoptions.auth, 'r') as f:
-            auth = json.load(f)
-
     # log to stdout
-    logging_level = logging.DEBUG if runoptions.verbose else logging.INFO
+    logging_level = logging.DEBUG if runoptions.verbose > 1 else logging.INFO
     root = logging.getLogger()
     root.setLevel(logging_level)
     channel = logging.StreamHandler(sys.stdout)
     channel.setLevel(logging_level)
-    channel.setFormatter(logging.Formatter('%(levelname)s - %(message)s'))
+    # channel.setFormatter(logging.Formatter('%(levelname)s:  %(message)s'))
+    channel.setFormatter(ColorFormatter())
     root.addHandler(channel)
+
+    # -------------------------------------------------------------------------
+    #  Read auth file
+
+    auth = {}
+    if runoptions.auth:
+        logging.info(f"Reading authentication data from '{runoptions.auth}'")
+        with open(runoptions.auth, 'r') as f:
+            auth = json.load(f)
 
     # -------------------------------------------------------------------------
     #  Read the dump file
@@ -613,29 +649,28 @@ def main():
             data.setdefault(table, [])
             data.get(table).append(row)
 
+        logging.info(f"    Parsed {linenum} lines")
+
     # -------------------------------------------------------------------------
     #  Index the data
 
-    logging.info("Creating data index")
+    logging.info("Indexing the data")
 
     # Store the fields for the tables
     data['_fields'] = tablefields
 
     # Convert table list to dicts indexed by key using keymap
-    data['_index'] = genindex(data, {
+    data['_index'] = indexassembladata(data, {
 
-        # Default key for all unlisted tables
-        None: 'id',
+        # None key specified index key for all unlisted tables.
+        # None: 'id',
 
-        # Other keys
-        'wiki_page_blobs': 'version_id',
-
-        # Tables to omit from index
-        'merge_requests': None,
-        'merge_request_versions': None,
-        'merge_request_votes': None,
-        'tickets_merge_requests': None,
-        'test_plan_tickets': None
+        # Tables to index
+        'wiki_pages': 'id',
+        'milestones': 'id',
+        'ticket_statuses': 'id',
+        'workflow_property_defs': 'id',
+        'wiki_page_versions': 'id',
     })
 
     # -------------------------------------------------------------------------
@@ -648,14 +683,17 @@ def main():
         with open(runoptions.wikidump, encoding='utf8') as filereader:
             wikidata = json.load(filereader)
 
-        mergewikidump(wikidata, data['_index']['wiki_page_versions'])
+        # Merge the file data with the main assembla database
+        mergewikidata(wikidata, data['_index']['wiki_page_versions'])
 
     # -------------------------------------------------------------------------
     #  UserID scrape
 
-    logging.info(f"Scraping for user ID")
+    logging.info("Scraping for user IDs")
 
-    data["_index"]["_users"] = scrapeusers(data)
+    users = scrapeusers(data)
+    data["_index"]["_users"] = users
+    data["_users"] = list(users.values())
 
     # -------------------------------------------------------------------------
     #  Read the user dump data
@@ -667,19 +705,66 @@ def main():
         with open(runoptions.userdump, encoding='utf8') as filereader:
             userdata = json.load(filereader)
 
-        mergeuserdump(userdata, data['_index']['_users'])
+        # Merge the file data with the main assembla database
+        mergeuserdata(userdata, data['_index']['_users'])
 
     # -------------------------------------------------------------------------
     # Run the command
+
+    # Set the verbosity
+    logging_level = logging.DEBUG if runoptions.verbose else logging.INFO
+    root.setLevel(logging_level)
+    channel.setLevel(logging_level)
 
     logging.info(f"Executing command '{runoptions.command}'")
     runoptions.func(parser, runoptions, auth, data)
 
 
 # -----------------------------------------------------------------------------
+#  Dump table command
+def cmd_dump(parser, runoptions, auth, data):
+
+    if not runoptions.table:
+
+        tables = sorted(data.keys())
+        if runoptions.headers:
+            print("Assembla table fields:")
+            headers = [
+                {
+                    'table': t,
+                    'fields': sorted(data['_fields'].get(t, [])),
+                }
+                for t in tables
+            ]
+            printtable(headers)
+            return
+
+        print("Assembla tables:")
+        printtable([{'table': t} for t in tables])
+        return
+
+    table = data.get(runoptions.table)
+    if not table:
+        parser.error(f"No such table: '{runoptions.table}'")
+
+    srange = None
+    if runoptions.limit:
+        srange = slice(0, runoptions.limit)
+
+    print(f"Table '{runoptions.table}':")
+    printtable(table, include=runoptions.include, exclude=runoptions.exclude, slice=srange)
+
+
+# -----------------------------------------------------------------------------
 #  Print users
-def cmd_users(parser, runoptions, auth, data):
-    printtable(data["_index"]["_users"])
+def cmd_lsusers(parser, runoptions, auth, data):
+    users = data["_index"]["_users"]
+    tables = set(runoptions.table or [])
+    if runoptions.table:
+        logging.info(f"Showing users present in tables: {' '.join(tables)}")
+        users = list(filter(lambda v: any(v['tables'].intersection(tables)), users.values()))
+
+    printtable(users, exclude=('tables', ))
 
 
 # -----------------------------------------------------------------------------
@@ -721,13 +806,16 @@ def cmd_userscrape(parser, runoptions, auth, data):
 
 # -----------------------------------------------------------------------------
 #  List wiki pages
-def cmd_wiki(parser, runoptions, auth, data):
+def cmd_lswiki(parser, runoptions, auth, data):
 
     # Parse the wiki entries (making rich additions to objects in data) and
     # return the order of wiki pages
     wikiorder = wikiparser(data)
 
-    printtable(wikiorder)
+    if not runoptions.changes:
+        printtable(wikiorder, exclude=('space_id', 'contents'))
+    else:
+        printtable(data['wiki_page_versions'], exclude=('contents',))
 
 
 # -----------------------------------------------------------------------------
@@ -767,6 +855,7 @@ def cmd_wikiscrape(parser, runoptions, auth, data):
         out.append(jsdata)
 
     # Save the entries to disk
+    logging.info(f"Saving wiki scrape data in '{runoptions.dump}'")
     with open(runoptions.dump, 'w') as f:
         json.dump(out, f)
 
@@ -774,6 +863,8 @@ def cmd_wikiscrape(parser, runoptions, auth, data):
 # -----------------------------------------------------------------------------
 #  WIKI conversion
 def cmd_wikiconvert(parser, runoptions, auth, data):
+
+    live = not runoptions.dry_run
 
     # Check arguments
     wikirepo = pathlib.Path(runoptions.repo)
@@ -795,6 +886,8 @@ def cmd_wikiconvert(parser, runoptions, auth, data):
     # the data required for git commit
     for commit in wikicommitgenerator(data['wiki_page_versions'], wikiorder):
 
+        logging.debug(f"Converting page '{commit['name']}'")
+
         files = []
         for name, contents in commit['files'].items():
             if not contents:
@@ -810,13 +903,14 @@ def cmd_wikiconvert(parser, runoptions, auth, data):
         actor = git.Actor(commit['author_name'], commit['author_email'])
         date = commit['date'].astimezone(timezone.utc).replace(tzinfo=None).isoformat()
 
-        repo.index.commit(
-            commit['message'],
-            author=actor,
-            author_date=date,
-            committer=actor,
-            commit_date=date,
-        )
+        if live:
+            repo.index.commit(
+                commit['message'],
+                author=actor,
+                author_date=date,
+                committer=actor,
+                commit_date=date,
+            )
 
 
 # -----------------------------------------------------------------------------

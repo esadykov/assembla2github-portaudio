@@ -9,8 +9,6 @@ migrates a full assembla site's tickets/milestones to github's issue format
 * Original assembla ticket number preserved
 * Ticket/milestone associations
 
-**repeatable** - can execute multiple times. The generated issues/milestone names are prefixed with the original assembla ID numbers. Pre-existing issues/milestones having names which start with assembla identifiers will be updated with new information and not duplicated
-
 ### installation/setup
 
 1. Install Python 3.7
@@ -48,11 +46,11 @@ will be read and merged with the Assembla dumpfile database using the extra opti
 
 `COMMAND` specifies the wanted operation. Current list of commands:
 
- * **`users`** - List all users found in dump file.
+ * **`lsusers`** - List all users found in dump file.
  * **`userscrape`** `FILE` - Use the Assembla API to fetch the user names and store in a user
         dump file. This file can be used later with the `--userdump` option to merge with the main
         data.
- * **`wiki`** - List all wiki pages found in dump file.
+ * **`lswiki`** - List all wiki pages found in dump file.
  * **`wikiscrape`** `FILE` - Use the Assembla API to fetch the wiki page contents and store in
         a dump file. This file can be used later with the `--wikidump` option to merge with the
         main data.
@@ -88,7 +86,7 @@ The procedure for converting the Assembla project to GitHub is:
         assembla2github.py --dump dump.js --userdump users.js --wikidump wikipages.js \
                 wikiconvert wiki
 
-6. *(WIKI)* Push the repo to GitHub
+6. *(WIKI)* Push the wiki repo to GitHub
 
         cd wiki
         push push
