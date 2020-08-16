@@ -24,7 +24,7 @@ migrates a full assembla site's tickets/milestones to github's issue format
 
         py -3.7 -mvenv venv
         venv\Scripts\python -mpip install --upgrade pip
-        venv\Scrtips\pip install -r requirements.txt
+        venv\Scripts\pip install -r requirements.txt
 
 3. in assembla source site go to settings -> export and import -> submit a request to export your tickets. the request is queued and may take several minutes. You'll eventually gain access to a downloadable backup of assembla tickets in a JSON-like format.
 4. edit the top of the assembla2github.py file, there are several project-specific mappings you must customize such as user and status mappings
