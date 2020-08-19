@@ -14,6 +14,7 @@ import github
 import re
 import itertools
 import colorama
+import functools
 
 # Ensure colored output on win32 platforms
 colorama.init()
@@ -49,6 +50,13 @@ WIKI_FIXUP_AUTHOR_NAME = "Wiki converter"
 WIKI_FIXUP_AUTHOR_EMAIL = "none@localhost"
 WIKI_FIXUP_MESSAGE = "Updated Wiki to GitHub formatting"
 WIKI_UNKNOWN_EMAIL = "none@localhost"
+
+# URLs to replace when converting Wiki
+WIKI_URL_REPLACE = [
+    ('https://www.assembla.com/spaces/portaudio/tickets/', '#'),
+    ('https://app.assembla.com/spaces/portaudio/tickets/', '#'),
+    ('https://app.assembla.com/spaces/portaudio/git/commits/', ''),
+]
 
 ASSEMBLA_MILESTONES = []
 ASSEMBLA_TICKETS = []
@@ -410,7 +418,16 @@ def wikicommitgenerator(wikiversions, order):
         }
 
     # Convert the repo to GitHub format
-    files = wikimigrate(pages, set(v['page_name'] for v in order))
+    page_names = set(v['page_name'] for v in order)
+    files = {}
+    for k, v in pages.items():
+        if not v:
+            continue
+        contents = migratetexttomd(v, k, page_names)
+        if contents == v:
+            continue
+        files[k] = contents
+
     if files:
         yield {
             'name': 'ALL',
@@ -420,65 +437,6 @@ def wikicommitgenerator(wikiversions, order):
             'message': WIKI_FIXUP_MESSAGE,
             'date': datetime.now().replace(microsecond=0),
         }
-
-
-def wikimigrate(pages, page_names):
-    """
-    Convert the wiki page to the GitHub format
-    """
-
-    # To find old headers. Variants:
-    #   .h1 Title  .h2 Title
-    re_heading = re.compile(r'^h(\d). ', re.M)
-
-    # To find [[links]]. Variants:
-    #   [[Wiki]]  [[Wiki|Printed name]]  [[url:someurl]]  [[url:someurl|Printed name]]
-    # 1=prefix:, 2=first group, 3=| second group, 4=second group
-    re_link = re.compile(r'\[\[(\w+?:)?(.+?)(\|(.+?))?\]\]', re.M)
-
-    files = {}
-    for k, v in pages.items():
-        if not v:
-            continue
-        contents = v
-
-        # Replacing .h1 .h2 headers
-        contents = re_heading.sub(lambda m: '#' * int(m[1]) + ' ', contents)
-
-        # Replacing [[links]]
-        def _link(m):
-            """ Link formatter replace callback """
-            if not m[1]:
-                # Is a wiki link
-                m2 = m[2]
-                # Special fixups
-                if m2 == 'tips/index':
-                    m2 = 'Tips'
-                if m2 == 'platforms/index':
-                    m2 = 'Platforms'
-                if m2 not in page_names:
-                    logging.warning(f"Wiki links to unknown page '{m2}'")
-                if not m[4]:
-                    # Bare wiki link
-                    return f"[[{m2}]]"
-                # Wiki link with name
-                return f"[[{m[4].strip()}|{m2}]]"
-            if m[1] == 'url:':
-                # Plain link
-                if not m[4]:
-                    return f"{m[2]}"
-                # Link with name
-                return f"[{m[4].strip()}]({m[2]})"
-            # Fallthrough
-            logging.warning(f"Unknown wiki link '{m[1]}'")
-            return f"[[{m[1] or ''}{m[2] or ''}{m[3] or ''}]]"
-        contents = re_link.sub(_link, contents)
-
-        if contents == v:
-            continue
-        files[k] = contents
-
-    return files
 
 
 def wikiindexproducer(index):
@@ -545,6 +503,123 @@ def mergeuserdata(userdata, users):
         logging.warning(f"Missing user data for {missing}")
 
     logging.info(f"    Found {count} user entries")
+
+
+# To find old headers. Variants:
+#   .h1 Title  .h2 Title
+RE_HEADING = re.compile(r'^h(\d). ', re.M)
+
+# To find !text!
+# 1=pre indent, 2=text
+RE_IMAGE = re.compile(r'(^[ \t]+)?!(\S+)!', re.M)
+
+# To find @text@
+RE_QUOTE = re.compile(r'@(.*?)@', re.M)
+
+# To find <pre><code> blocks
+RE_PRECODE = re.compile(r'<pre><code>(.*?)</code></pre>', re.M|re.S)
+
+# To find <pre> blocks
+RE_PRE = re.compile(r'<pre>(.*?)</pre>', re.M|re.S)
+
+def sub_preformat(m):
+    """ Substitute as preformatted text """
+    line = m[1].splitlines()
+    pre = '\n' if line[0] else ''
+    post = '\n' if m[1][-1] not in ('\n\r') else ''
+    return f"```{pre}{m[1]}{post}```"
+
+# To find table headers (|_. col1 |_. col2 |_. ... |)
+# 1=pre indent, 2=headers excluding opening '|_.' and closing '|'
+RE_TABLEHEADER = re.compile(r'^([ \t]+)?\|_\.(.*?)\|\s*$', re.M)
+
+def sub_tableheader(m):
+    """ Substitute table header format """
+    columns = m[2].split('|_.')
+    return f'| {" | ".join([c.strip() for c in columns])} |\n|{" --- |" * len(columns)}'
+
+# To find [[links]]. Variants:
+#   [[Wiki]]  [[Wiki|Printed name]]  [[url:someurl]]  [[url:someurl|Printed name]]
+# 1=pre indent, 2=prefix:, 3=first group, 4=| second group, 5=second group
+RE_LINK = re.compile(r'(^[ \t]+)?\[\[(\w+?:)?(.+?)(\|(.+?))?\]\]', re.M)
+
+def sub_link(m, page_names, ref):
+    """ Subsitute [[link]] blocks with MD links """
+    m3 = m[3]
+    if not m[2]:
+        # Is a wiki link (no prefix:)
+        # Special fixups
+        if m3 == 'tips/index':
+            m3 = 'Tips'
+        if m3 == 'platforms/index':
+            m3 = 'Platforms'
+        if m3 not in page_names:
+            logging.warning(f"{ref}: Wiki links to unknown page '{m3.strip()}'")
+        if not m[5]:
+            # Bare wiki link
+            return f"[[{m3}]]"
+        # Wiki link with name
+        return f"[[{m[5].strip()}|{m3}]]"
+    if m[2] == 'url:':
+        # Plain link
+        if not m[5]:
+            return m3
+        # Assembla git reference
+        #url = 'https://app.assembla.com/spaces/portaudio/git/commits/'
+        #if m3.startswith(url):
+        #    m3 = m3.replace(url, '')
+        #    return m3
+        # Link with name
+        return f"[{m[5].strip()}]({m3})"
+    if m[2] in ('http:', 'https:'):
+        return f"[{m[5].strip()}]({m[2]}{m3})"
+    # Fallthrough
+    logging.warning(f"{ref}: Unknown wiki link '{m[2]}'")
+    return f"[[{m[2] or ''}{m3 or ''}{m[4] or ''}]]"
+
+# To find URLs
+RE_URL = re.compile(r'\b(http|https)://([\w\.]+)([\w\./]*)')
+
+
+def migratetexttomd(text, ref, page_names):
+    if not text:
+        return text
+
+    # Replacing .h1 .h2 headers
+    text = RE_HEADING.sub(lambda m: '#' * int(m[1]) + ' ', text)
+
+    # Replacing !image!
+    text = RE_IMAGE.sub(lambda m: f'![{m[2].split("/")[-1]}]({m[2]})', text)
+
+    # Replacing @quote@
+    text = RE_QUOTE.sub(lambda m: f'`{m[1]}`', text)
+
+    # Replacing <pre><code>text</code></pre>
+    text = RE_PRECODE.sub(sub_preformat, text)
+
+    # Replacing <pre>text</pre>
+    text = RE_PRE.sub(sub_preformat, text)
+
+    # Replacing <hr>
+    text = text.replace('<hr>', '---')
+
+    # Replace table headers
+    text = RE_TABLEHEADER.sub(sub_tableheader, text)
+
+    # Replacing [[links]]
+    text = RE_LINK.sub(functools.partial(sub_link, ref=ref, page_names=page_names), text)
+
+    # Replace URLs in list
+    for a, b in WIKI_URL_REPLACE:
+        text = text.replace(a, b)
+
+    # Inform about remaining assembla links
+    for m in RE_URL.finditer(text):
+        if 'assembla' not in m[2]:
+            continue
+        logging.warning(f"{ref}: Link to Assembla: '{m[0]}'")
+
+    return text
 
 
 def check_config(auth, parser, required):
