@@ -423,6 +423,7 @@ def wikicommitgenerator(wikiversions, order):
     for k, v in pages.items():
         if not v:
             continue
+        logging.debug(f"Migrating page '{k}'")
         contents = migratetexttomd(v, k, page_names)
         if contents == v:
             continue
@@ -505,13 +506,28 @@ def mergeuserdata(userdata, users):
     logging.info(f"    Found {count} user entries")
 
 
+# To find old lists. Variants:
+#   # List
+RE_LIST = re.compile(r'^# (.*)$', re.M)
+
+# To find '** line'
+RE_LIST2 = re.compile(r'^\*\*([^\*]*)$', re.M)
+
+# To find '** line'
+RE_LIST3 = re.compile(r'^([ \t]*)\*\*([^\*]*)$', re.M)
+
+def sub_list2(m):
+    print(f"MATCH: xxx[{m[0]}]xxx")
+    return m[0]
+
 # To find old headers. Variants:
 #   .h1 Title  .h2 Title
 RE_HEADING = re.compile(r'^h(\d). ', re.M)
 
-# To find !text!
+# To find !text!. Variants:
+#    !<link!
 # 1=pre indent, 2=text
-RE_IMAGE = re.compile(r'(^[ \t]+)?!(\S+)!', re.M)
+RE_IMAGE = re.compile(r'(^[ \t]+)?!<?(\S+)!', re.M)
 
 # To find @text@
 RE_QUOTE = re.compile(r'@(.*?)@', re.M)
@@ -537,6 +553,17 @@ def sub_tableheader(m):
     """ Substitute table header format """
     columns = m[2].split('|_.')
     return f'| {" | ".join([c.strip() for c in columns])} |\n|{" --- |" * len(columns)}'
+
+# Find whole table (indicated by lines of |something|)
+RE_TABLE = re.compile(r'(^[ \t]*\|.*\|[ \t]*$\n)+', re.M)
+
+def sub_tableaddheader(m):
+    """ Ensure table has header """
+    if '| --- |' in m[0]:
+        return m[0]
+    lines = m[0].split('\n')
+    columns = len(lines[0].split('|')) - 2
+    return f'|{" |"*columns}\n|{" --- |"*columns}\n{m[0]}'
 
 # To find [[links]]. Variants:
 #   [[Wiki]]  [[Wiki|Printed name]]  [[url:someurl]]  [[url:someurl|Printed name]]
@@ -585,6 +612,18 @@ def migratetexttomd(text, ref, page_names):
     if not text:
         return text
 
+    # Convert to unix line endings
+    text = "\n".join(text.splitlines())
+
+    # Replace # lines with bullet points
+    text = RE_LIST.sub(lambda m: '* ' + m[1], text)
+
+    # Replace '** line' with '  * line'
+    text = RE_LIST2.sub(lambda m: '  * ' + m[1], text)
+
+    # Replace '   ** line' with '   * line'
+    text = RE_LIST3.sub(lambda m: m[1] + '* ' + m[2], text)
+
     # Replacing .h1 .h2 headers
     text = RE_HEADING.sub(lambda m: '#' * int(m[1]) + ' ', text)
 
@@ -605,6 +644,9 @@ def migratetexttomd(text, ref, page_names):
 
     # Replace table headers
     text = RE_TABLEHEADER.sub(sub_tableheader, text)
+
+    # Ensure tables have table headers
+    text = RE_TABLE.sub(sub_tableaddheader, text)
 
     # Replacing [[links]]
     text = RE_LINK.sub(functools.partial(sub_link, ref=ref, page_names=page_names), text)
@@ -681,6 +723,7 @@ def main():
     subcmd = subparser.add_parser('wikiconvert', help="Convert to GitHub wiki repo")
     subcmd.add_argument('repo', help='cloned git wiki repo directory')
     subcmd.add_argument('--dry-run', '-n', action="store_true", help="Do not commit any data")
+    subcmd.add_argument('--no-convert', action="store_true", help="Do not commit conversion change")
     subcmd.set_defaults(func=cmd_wikiconvert)
 
     subcmd = subparser.add_parser('wikiscrape', help="Scrape wiki from Assembla")
@@ -977,6 +1020,10 @@ def cmd_wikiconvert(parser, runoptions, auth, data):
 
         actor = git.Actor(commit['author_name'], commit['author_email'])
         date = commit['date'].astimezone(timezone.utc).replace(tzinfo=None).isoformat()
+
+        # Skip commit of convert if --no-convert is used
+        if commit['name'] == 'ALL' and runoptions.no_convert:
+            continue
 
         if live:
             repo.index.commit(
