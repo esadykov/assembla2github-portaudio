@@ -19,22 +19,54 @@ import functools
 # Ensure colored output on win32 platforms
 colorama.init()
 
-# map your assembla ticket statuses to Open or Closed here.
-ASSEMBLA_TICKET_STATUS_TO_GITHUB_ISSUE_STATUS = {
-    'New': 'open',
-    'Accepted': 'open',
-    'Test': 'open',
-    'Invalid': 'closed',
-    'Fixed': 'closed',
-    'Demo': 'closed',
-    'Review / Estimation': 'open',
+# Map Assembla field values to GitHub lables. The value 'None' indicates that
+# the field will be omitted.
+ASSEMBLA_TO_GITHUB_LABELS = {
+    'status': {
+        'New': 'new',
+        'Accepted': 'accepted',
+        'Test': 'test',
+        'Invalid': 'invalid',
+        'Fixed': 'fixed',
+        'Duplicate': 'duplicate',
+        'WontFix': 'wontfix',
+        'WorksForMe': 'worksforme',
+    },
+    'priority': {
+        'Highest (1)': 'p1',
+        'High (2)': 'p2',
+        'Normal (3)': 'p3',
+        'Low (4)': 'p4',
+        'Lowest (5)': 'p5',
+    },
+    'tags': {
+        'osx': 'osx',
+        'linux': 'linux',
+        'docs': 'docs',
+        'windows': 'windows',
+        'git': 'git',
+        'qa': 'qa',
+    },
+    'component': {
+    },
+    'keywords': {
+    }
 }
 
-# map your assembla user hashes to github logins here.
-ASSEMBLA_USERID_TO_GITHUB_USERID = {
-    'XXX': 'User1',
-    'YYY': 'User2',
-    'ZZZ': 'User3',
+# New GitHub labels to create. The value is the RGB hex color for that label.
+# For reference, GitHub comes with the following default labels:
+#   'bug': 'd73a4a',
+#   'documentation': '0075ca',
+#   'duplicate': 'cfd3d7',
+#   'enhancement': 'a2eeef',
+#   'good first issue': '7057ff',
+#   'help wanted': '008672',
+#   'invalid': 'e4e669',
+#   'question': 'd876e3',
+#   'wontfix': 'ffffff',
+NEW_GITHUB_LABELS = {
+    'accepted': '70aa23',
+    'worksforme': 'e6ed6d',
 }
 
 # User mapping from assembla to github
