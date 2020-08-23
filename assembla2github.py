@@ -729,6 +729,9 @@ def sub_link(m, page_names, ref):
     logging.warning(f"{ref}: Unknown wiki link '{m[2]}'")
     return f"[[{m[2] or ''}{m3 or ''}{m[4] or ''}]]"
 
+# To find [[links]] on separate lines
+RE_LINK2 = re.compile(r'^\[\[.*\]\]$', re.M)
+
 # To find URLs
 RE_URL = re.compile(r'\b(http|https)://([\w\.]+)([\w\./]*)')
 
@@ -740,8 +743,8 @@ def migratetexttomd(text, ref, page_names):
     # Convert to unix line endings
     text = "\n".join(text.splitlines())
 
-    # Replace # lines with bullet points
-    text = RE_LIST.sub(lambda m: '* ' + m[1], text)
+    # Replace # lines with numbered lists
+    text = RE_LIST.sub(lambda m: '1. ' + m[1], text)
 
     # Replace '** line' with '  * line'
     text = RE_LIST2.sub(lambda m: '  * ' + m[1], text)
@@ -775,6 +778,9 @@ def migratetexttomd(text, ref, page_names):
 
     # Replacing [[links]]
     text = RE_LINK.sub(functools.partial(sub_link, ref=ref, page_names=page_names), text)
+
+    # Insert a newline on lines with [[links]] to ensure its not inline text
+    text = RE_LINK2.sub(lambda m: '\n' + m[0], text)
 
     # Replace URLs in list
     for a, b in WIKI_URL_REPLACE:
