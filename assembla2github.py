@@ -641,10 +641,6 @@ RE_LIST2 = re.compile(r'^\*\*([^\*]*)$', re.M)
 # To find '** line'
 RE_LIST3 = re.compile(r'^([ \t]*)\*\*([^\*]*)$', re.M)
 
-def sub_list2(m):
-    print(f"MATCH: xxx[{m[0]}]xxx")
-    return m[0]
-
 # To find old headers. Variants:
 #   .h1 Title  .h2 Title
 RE_HEADING = re.compile(r'^h(\d). ', re.M)
@@ -747,7 +743,7 @@ def migratetexttomd(text, ref, page_names):
     text = RE_LIST.sub(lambda m: '1. ' + m[1], text)
 
     # Replace '** line' with '  * line'
-    text = RE_LIST2.sub(lambda m: '  * ' + m[1], text)
+    text = RE_LIST2.sub(lambda m: '   * ' + m[1], text)
 
     # Replace '   ** line' with '   * line'
     text = RE_LIST3.sub(lambda m: m[1] + '* ' + m[2], text)
