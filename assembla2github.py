@@ -20,6 +20,9 @@ import functools
 # Ensure colored output on win32 platforms
 colorama.init()
 
+TOOLVERSION=3
+TOOLDATE="2020-09-09"
+
 # Map Assembla field values to GitHub lables. The value 'None' indicates that
 # the field will be omitted.
 ASSEMBLA_TO_GITHUB_LABELS = {
@@ -198,12 +201,10 @@ WIKI_UNKNOWN_EMAIL = "none@localhost"
 
 # URLs to replace when converting Wiki
 URL_RE_REPLACE = [
-    (r'^https?://(www|app)\.assembla\.com/spaces/{ASSEMBLA_SPACE}/tickets/(\d+)$', r'#\2'),
     (r'^https?://(www|app)\.assembla\.com/spaces/{ASSEMBLA_SPACE}/tickets$', r'{GITHUB_URL}/issues'),
     (r'^https?://(www|app)\.assembla\.com/spaces/{ASSEMBLA_SPACE}/tickets\.$', r'{GITHUB_URL}/issues.'),
     (r'^https?://(www|app)\.assembla\.com/spaces/{ASSEMBLA_SPACE}/tickets/new$', r'{GITHUB_URL}/issues/new'),
     (r'^https?://(www|app)\.assembla\.com/spaces/{ASSEMBLA_SPACE}/wiki$', r'{GITHUB_URL}/wiki'),
-    (r'^https?://(www|app)\.assembla\.com/spaces/{ASSEMBLA_SPACE}/wiki/(.*)$', r'[[\2]]'),
     (r'^https?://(www|app)\.assembla\.com/spaces/{ASSEMBLA_SPACE}/milestones$', r'{GITHUB_URL}/milestones'),
     (r'^https?://(www|app)\.assembla\.com/spaces/{ASSEMBLA_SPACE}/git/source$', r'{GITHUB_URL}/'),
     (r'^https?://(www|app)\.assembla\.com/spaces/{ASSEMBLA_SPACE}/git/source/([^\?]*)(\?.*)?$', r'{GITHUB_URL}/tree/\2'),
@@ -211,7 +212,17 @@ URL_RE_REPLACE = [
     (r'^https?://(www|app)\.assembla\.com/spaces/{ASSEMBLA_SPACE}/git/commits/(\w+)$', r'\2'),
     (r'^https?://git\.assembla\.com/{ASSEMBLA_SPACE}\.git$', r'{GITHUB_URL}.git'),
 ]
+URL_RE_REPLACE_WIKI = [
+    (r'^https?://(www|app)\.assembla\.com/spaces/{ASSEMBLA_SPACE}/tickets/(\d+)$', r'[#\2](../issues/\2)'),
+    (r'^https?://(www|app)\.assembla\.com/spaces/{ASSEMBLA_SPACE}/wiki/(.*)$', r'[[\2]]'),
+]
+URL_RE_REPLACE_TICKETS = [
+    (r'^https?://(www|app)\.assembla\.com/spaces/{ASSEMBLA_SPACE}/tickets/(\d+)$', r'#\2'),
+    (r'^https?://(www|app)\.assembla\.com/spaces/{ASSEMBLA_SPACE}/wiki/(.*)$', r'[\2](../wiki/\2)'),
+]
 _URL_RE = []
+_URL_RE_WIKI = []
+_URL_RE_TICKETS = []
 
 # Polling exponential delay
 POLL_INITIAL = 0.1
@@ -662,7 +673,7 @@ def wikicommitgenerator(wikiversions, order):
         if not v:
             continue
         logging.debug(f"Migrating page '{k}'")
-        contents = migratetexttomd(v, k, page_names, migrate_at=True)
+        contents = migratetexttomd(v, k, migrate_at=True, wikipages=page_names)
         if contents == v:
             continue
         files[k] = contents
@@ -777,11 +788,20 @@ RE_PRE = re.compile(r'(<pre>.*?</pre>|{{{.*?}}})', re.M | re.S)
 
 # To find table headers (|_. col1 |_. col2 |_. ... |)
 # 1=pre indent, 2=headers excluding opening '|_.' and closing '|'
-RE_TABLEHEADER = re.compile(r'^([ \t]+)?\|_\.(.*?)\|\s*$', re.M)
+RE_TABLEHEADER = re.compile(r'^([ \t]+)?\|_\.(.*?)\|[ \t]*$', re.M)
+
+# To find table headers (||= col1 =||= col2 =||)
+# 1=pre indent, 2=headers excluding opening '|_.' and closing '|'
+RE_TABLEHEADER2 = re.compile(r'^([ \t]+)?\|\|=(.*?)=\|\|[ \t]*$', re.M)
 
 def sub_tableheader(m):
     """ Substitute table header format """
     columns = m[2].split('|_.')
+    return f'| {" | ".join([c.strip() for c in columns])} |\n|{" --- |" * len(columns)}'
+
+def sub_tableheader2(m):
+    """ Substitute table header format """
+    columns = m[2].split('=||=')
     return f'| {" | ".join([c.strip() for c in columns])} |\n|{" --- |" * len(columns)}'
 
 # Find whole table (indicated by lines of |something|)
@@ -789,34 +809,45 @@ RE_TABLE = re.compile(r'(^[ \t]*\|.*\|[ \t]*$\n)+', re.M)
 
 def sub_tableaddheader(m):
     """ Ensure table has header """
-    if '| --- |' in m[0]:
-        return m[0]
-    lines = m[0].split('\n')
+    m0 = m[0].replace('||', '|')
+    if '| --- |' in m0:
+        return m0
+    lines = m0.split('\n')
     columns = len(lines[0].split('|')) - 2
-    return f'|{" |"*columns}\n|{" --- |"*columns}\n{m[0]}'
+    return f'|{" |"*columns}\n|{" --- |"*columns}\n{m0}'
 
 # To find [[links]]. Variants:
 #   [[Wiki]]  [[Wiki|Printed name]]  [[url:someurl]]  [[url:someurl|Printed name]]
 # 1=pre indent, 2=prefix:, 3=first group, 4=| second group, 5=second group
 RE_LINK = re.compile(r'(^[ \t]+)?\[\[(\w+?:)?(.+?)(\|(.+?))?\]\]', re.M)
 
-def sub_link(m, page_names, ref):
+def sub_link(m, ref, is_wiki, wikipages, documents):
     """ Subsitute [[link]] blocks with MD links """
     m3 = m[3]
     if not m[2]:
-        # Is a wiki link (no prefix:)
+        # Is a [[wiki]] link (no prefix:)
         # Special fixups
         if m3 == 'tips/index':
             m3 = 'Tips'
         if m3 == 'platforms/index':
             m3 = 'Platforms'
-        if not page_names or m3 not in page_names:
+        if m3 == 'BR':
+            return "\n"
+        if m3 == ' $AR = "no" ':
+            return m[0]
+        m5 = m[5]
+        if not wikipages or m3 not in wikipages:
             logging.warning(f"{ref}: Wiki links to unknown page '{m3.strip()}'")
-        if not m[5]:
-            # Bare wiki link
-            return f"[[{m3}]]"
-        # Wiki link with name
-        return f"[[{m[5].strip()}|{m3}]]"
+        if is_wiki:
+            if not m5:
+                # Bare wiki link
+                return f"[[{m3}]]"
+            # Wiki link with name
+            return f"[[{m5.strip()}|{m3}]]"
+        else:
+            if not m5:
+                m5 = m3
+            return f"[{m5.strip()}](../wiki/{m3})"
     if m[2] == 'url:':
         # Plain link without name
         if not m[5]:
@@ -826,10 +857,18 @@ def sub_link(m, page_names, ref):
             return m3
         # Named link
         return f"[{m5}]({m3})"
-    #if m[2] == 'file:':
-    #    # Reference to file attachment
-    #    logging.warning(f"{ref}: Reference to attachment '{m3}'")
-    #    return f"[Attachment {m3}]({m3})"
+    if m[2] in ('file:', 'image:'):
+        what = 'attachment' if m[2] == 'file:' else 'image'
+        # Reference to file attachment
+        doc = {}
+        if documents:
+            doc = documents.get(m3)
+        if not doc:
+            logging.warning(f"{ref}: Reference to unknown {what} '{m3}'")
+        else:
+            m3 = doc['filename']
+            logging.info(f"{ref}: Inserting reference to {what} '{m3}'")
+        return f"[{what.capitalize()} {m3}]({m3})"
     if m[2] == 'r:':
         # Git reference
         return m3
@@ -839,16 +878,27 @@ def sub_link(m, page_names, ref):
     logging.warning(f"{ref}: Unparseable link '{m[0]}'")
     return f"[[{m[2] or ''}{m3 or ''}{m[4] or ''}]]"
 
+# To find (name)[link]
+RE_LINK2 = re.compile(r'\[(.*?)\]\((.*?)\)', re.M)
+
+def sub_link2(m):
+    """ Subsitute (name)[link] blocks with indentical links """
+    m1 = m[1].strip()
+    m2 = m[2].strip()
+    if m1 == m2:
+        return m1
+    return m[0]
+
 # To find [[links]] on separate lines
-RE_LINK2 = re.compile(r'^\[\[.*\]\]$', re.M)
+RE_LINK3 = re.compile(r'^\[\[.*\]\]$', re.M)
 
 # To find URLs
 RE_URL = re.compile(r'\bhttps?://([\w\.\-]+)(/[\w\.\-/%#]*)?(\?[\w=%&\.\-$]*)?')
 
-def sub_url(m):
+def sub_url(m, is_wiki):
     """ Replace URLs listed in URL_RE_REPLACE list """
     t = m[0]
-    for r, n in _URL_RE:
+    for r, n in (_URL_RE_WIKI if is_wiki else _URL_RE_TICKETS) + _URL_RE:
         t = r.sub(n, t)
     return t
 
@@ -857,12 +907,15 @@ def sub_url(m):
 #  - Ticket #202.1
 #    Table def: ||= host api =||= status=||
 #    Interpretation: | --- | --- | --- | --- | --- |
-def migratetexttomd(text, ref, page_names=None, migrate_at=False):
+def migratetexttomd(text, ref, migrate_at=False, is_wiki=True, wikipages=None, documents=None):
     if not text:
         return text
 
     # Convert to unix line endings
+    otext = text
     text = "\n".join(text.splitlines())
+    if otext[-1] == '\n' or text[-1] != '\n':
+        text += '\n'
 
     # Split on all <pre> groups
     textlist = []
@@ -881,7 +934,7 @@ def migratetexttomd(text, ref, page_names=None, migrate_at=False):
             if '\n' in text:
                 lines = text.split('\n')
                 pre = '\n' if lines[0] else ''
-                post = '\n' if lines[-1] else ''
+                post = '\n' if lines[-1] and not lines[-1].startswith('>') else ''
                 text = "```" + pre + text + post + "```"
             else:
                 text = "`" + text + "`"
@@ -914,10 +967,13 @@ def migratetexttomd(text, ref, page_names=None, migrate_at=False):
         text = text.replace('<hr>', '---')
 
         # Replacing [[links]]
-        text = RE_LINK.sub(functools.partial(sub_link, ref=ref, page_names=page_names), text)
+        text = RE_LINK.sub(functools.partial(sub_link, ref=ref, is_wiki=is_wiki, wikipages=wikipages, documents=documents), text)
+
+        # Replacing [name](link)
+        text = RE_LINK2.sub(sub_link2, text)
 
         # Insert a newline on lines with [[links]] to ensure its not inline text
-        text = RE_LINK2.sub(lambda m: '\n' + m[0], text)
+        text = RE_LINK3.sub(lambda m: '\n' + m[0], text)
 
         # Commit segment
         textlist.append(text)
@@ -925,14 +981,17 @@ def migratetexttomd(text, ref, page_names=None, migrate_at=False):
     # Combine into continous text again
     text = ''.join(textlist)
 
-    # Replace table headers
+    # Replace table headers for |_. headers |_.
     text = RE_TABLEHEADER.sub(sub_tableheader, text)
+
+    # Replace table headers for ||= headers =||
+    text = RE_TABLEHEADER2.sub(sub_tableheader2, text)
 
     # Ensure tables have table headers
     text = RE_TABLE.sub(sub_tableaddheader, text)
 
     # Replace URLs in text
-    text = RE_URL.sub(sub_url, text)
+    text = RE_URL.sub(functools.partial(sub_url, is_wiki=is_wiki), text)
 
     # Inform about remaining assembla links
     for m in RE_URL.finditer(text):
@@ -1266,7 +1325,7 @@ def tickettimelinegenerator(ticket):
 
             elif subject == 'attachment':
                 after = c['after'].split('\n')
-                logging.info(f"Ticket #{ticket['number']}: Ticket has attachment {after}")
+                # logging.info(f"Ticket #{ticket['number']}: Ticket has attachment {after}")
                 continue
 
             # Ignored changes
@@ -1329,7 +1388,7 @@ def tickettimelinegenerator(ticket):
     return changes
 
 
-def tickettogithub(ticket, changes):
+def tickettogithub(ticket, changes, wikipages=None, documents=None):
     """
     Convert ticket with changes list to github format
     """
@@ -1349,7 +1408,7 @@ def tickettogithub(ticket, changes):
     github = {
         # Description
         "title": ticket['summary'],
-        "body": migratetexttomd(ticket['description'], f'Ticket #{key}'),
+        "body": migratetexttomd(ticket['description'], f'Ticket #{key}', is_wiki=False, wikipages=wikipages, documents=documents),
         "annotation": githubcreatedheader(ticket['_reporter']),
 
         # Dates
@@ -1383,7 +1442,7 @@ def tickettogithub(ticket, changes):
         # The change is a comment
         if change.get('body'):
             ghchange.update({
-                "body": migratetexttomd(change.get('body'), f'Ticket #{ckey}'),
+                "body": migratetexttomd(change.get('body'), f'Ticket #{ckey}', is_wiki=False, wikipages=wikipages, documents=documents),
                 "annotation": githubcommentedheader(change['user']),
             })
 
@@ -1533,6 +1592,8 @@ def main():
     channel.setFormatter(ColorFormatter())
     root.addHandler(channel)
 
+    logging.info(f"Running assembla2github.py v{TOOLVERSION} ({TOOLDATE})")
+
     # -------------------------------------------------------------------------
     #  Read config file
 
@@ -1603,6 +1664,7 @@ def main():
         'workflow_property_defs': 'id',
         'wiki_page_versions': 'id',
         'tag_names': 'id',
+        'documents': 'id',
     })
 
     # -------------------------------------------------------------------------
@@ -1646,11 +1708,17 @@ def main():
     if 'repo' in config:
         space = data["spaces"][0]["name"].lower()
         url = "https://github.com/" + config['repo']
-        global _URL_RE
-        for k in URL_RE_REPLACE:
-            k0 = k[0].replace('{ASSEMBLA_SPACE}', space)
-            k1 = k[1].replace('{GITHUB_URL}', url)
-            _URL_RE.append((re.compile(k0), k1))
+
+        def replace(inlist, outlist):
+            for k in inlist:
+                k0 = k[0].replace('{ASSEMBLA_SPACE}', space)
+                k1 = k[1].replace('{GITHUB_URL}', url)
+                outlist.append((re.compile(k0), k1))
+
+        global _URL_RE, _URL_RE_WIKI, _URL_RE_TICKETS
+        replace(URL_RE_REPLACE, _URL_RE)
+        replace(URL_RE_REPLACE_WIKI, _URL_RE_WIKI)
+        replace(URL_RE_REPLACE_TICKETS, _URL_RE_TICKETS)
 
     # -------------------------------------------------------------------------
     # Run the command
@@ -1861,7 +1929,11 @@ def cmd_wikiconvert(parser, options, config, auth, data):
     # Open git repo
     repo = None
     if not options.dry_run:
-        repo = git.Repo.clone_from('https://github.com/' + config['repo'] + '.wiki.git', wikidir)
+
+        url = 'https://github.com/' + config['repo'] + '.wiki.git'
+        logging.info(f"Checking out '{url}'")
+
+        repo = git.Repo.clone_from(url, wikidir)
         wikirepo = pathlib.Path(repo.working_tree_dir)
 
     # Parse the wiki entries (making rich additions to objects in data) and
@@ -1922,6 +1994,9 @@ def cmd_lstickets(parser, options, config, auth, data):
     if options.quiet:
         tprint = lambda *a: None
 
+    # Parse the wiki entries to get the wiki page names
+    wikipages = set(v['page_name'] for v in wikiparser(data))
+
     # Prep the dataset for conversion
     ticketparser(data)
 
@@ -1945,7 +2020,7 @@ def cmd_lstickets(parser, options, config, auth, data):
                 before[f"#{ticket['number']} Comment {i}"] = change['body']
 
         # Convert the issue to github data
-        issue, ghchanges = tickettogithub(ticket, changes)
+        issue, ghchanges = tickettogithub(ticket, changes, wikipages=wikipages, documents=data['_index']['documents'])
 
         # Save the description after conversion
         after[f"#{ticket['number']} Description"] = issue['body']
@@ -2056,6 +2131,9 @@ def cmd_ticketsconvert(parser, options, config, auth, data):
     # Check for required auth fields
     check_authconfig(auth, parser, ('username', 'password'))
 
+    # Parse the wiki entries to get the wiki page names
+    wikipages = set(v['page_name'] for v in wikiparser(data))
+
     # Prep the dataset for conversion
     ticketparser(data)
 
@@ -2136,6 +2214,7 @@ def cmd_ticketsconvert(parser, options, config, auth, data):
 
     logging.info('Converting tickets -> issues...')
 
+    tick = 0
     for ticket in sorted(data['tickets'], key=lambda v: v['number']):
         key = ticket['number']
         logging.debug(f"{colorama.Fore.GREEN}Ticket #{key}{colorama.Style.RESET_ALL}")
@@ -2150,7 +2229,7 @@ def cmd_ticketsconvert(parser, options, config, auth, data):
         changes = tickettimelinegenerator(ticket)
 
         # Convert the issue to github data
-        ghissue, ghchanges = tickettogithub(ticket, changes)
+        ghissue, ghchanges = tickettogithub(ticket, changes, wikipages=wikipages, documents=data['_index']['documents'])
 
         # Find the GH milestone
         milestone = ghissue['milestone']
@@ -2222,7 +2301,6 @@ def cmd_ticketsconvert(parser, options, config, auth, data):
             logging.info(f"  Uploading ticket #{key}")
 
             # Post the issue data
-            print("   ", end='')
             res = requests.post(url, json=jdata, auth=gauth, headers=headers)
             resjson = res.json()
 
@@ -2232,7 +2310,6 @@ def cmd_ticketsconvert(parser, options, config, auth, data):
             # print(f"    JSON:    {resjson}")
 
             if res.status_code != 202:
-                print('  failed')
                 logging.error(f"Failed to upload ticket #{key}. Status code {res.status_code} returned")
                 if 'message' in resjson:
                     logging.error(f"Response text: {resjson['message']}")
@@ -2240,14 +2317,18 @@ def cmd_ticketsconvert(parser, options, config, auth, data):
 
             # Make sure that we have enough rate limits requests remaining
             remain = int(res.headers.get('X-RateLimit-Remaining', '0'))
+            reset = datetime.fromtimestamp(int(res.headers['X-RateLimit-Reset']), timezone.utc).astimezone()
+            if time.time() > tick + 60:
+                logging.info(f"  Remaining ratelimit quota: {remain} (will reset at {str(reset)})")
+                tick = time.time()
             if remain < 100:
-                print('  failed')
-                reset = datetime.fromtimestamp(int(res.headers['X-RateLimit-Reset']), timezone.utc).astimezone()
                 logging.error(f"Rate limits exceeded. Aborting conversion. Please retry after {str(reset)}")
                 return
 
             # Poll GitHub to get the issue ID
             delay = POLL_INITIAL
+            failcount = 0
+            print("   ", end='')
             while resjson['status'] == 'pending':
 
                 # Sleep an exponential amount of time
@@ -2266,10 +2347,17 @@ def cmd_ticketsconvert(parser, options, config, auth, data):
                 # print(f"    JSON:    {resjson}")
 
                 if res.status_code != 200:
-                    print('  failed')
+                    print('F', end='')
                     logging.error(f"Failed to get status of ticket #{key}. Status code {res.status_code} returned")
+                    logging.error(f"Headers: {res.headers}")
                     if 'message' in resjson:
                         logging.error(f"Response text: {resjson['message']}")
+
+                    # Ensure retries
+                    failcount += 1
+                    if failcount < 5:
+                        logging.warning("Retrying...")
+                        continue
                     break
 
             if res.status_code != 200:
