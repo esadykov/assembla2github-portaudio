@@ -111,3 +111,5 @@ data/
 __*
 .vscode/
 auth.json
+config.json
+*.git/

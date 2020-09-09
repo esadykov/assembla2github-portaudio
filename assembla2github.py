@@ -20,10 +20,6 @@ import functools
 # Ensure colored output on win32 platforms
 colorama.init()
 
-# Name of the GitHub repo
-GITHUB_REPO = "<user>/<repo>"
-GITHUB_URL = f'https://github.com/{GITHUB_REPO}'
-
 # Map Assembla field values to GitHub lables. The value 'None' indicates that
 # the field will be omitted.
 ASSEMBLA_TO_GITHUB_LABELS = {
@@ -194,28 +190,33 @@ ASSEMBLA_USERID = {
 }
 
 # Settings for Wiki conversions
+WIKI_MENU_HEADING = "# PortAudio"
 WIKI_FIXUP_AUTHOR_NAME = "Wiki converter"
 WIKI_FIXUP_AUTHOR_EMAIL = "none@localhost"
 WIKI_FIXUP_MESSAGE = "Updated Wiki to GitHub formatting"
 WIKI_UNKNOWN_EMAIL = "none@localhost"
 
 # URLs to replace when converting Wiki
-_GITHUB_URL_REPLACE = [
-    (r'^https?://(www|app)\.assembla\.com/spaces/portaudio/tickets/(\d+)$', r'#\2'),
-    (r'^https?://www\.assembla\.com/spaces/portaudio/tickets$', f'{GITHUB_URL}/issues'),
-    (r'^https?://www\.assembla\.com/spaces/portaudio/tickets\.$', f'{GITHUB_URL}/issues.'),
-    (r'^https?://www\.assembla\.com/spaces/portaudio/tickets/new$', f'{GITHUB_URL}/issues/new'),
-    (r'^https?://www\.assembla\.com/spaces/portaudio/wiki$', f'{GITHUB_URL}/wiki'),
-    (r'^https?://(www|app)\.assembla\.com/spaces/portaudio/wiki/(.*)$', r'[[\2]]'),
-    (r'^https?://www\.assembla\.com/spaces/portaudio/milestones$', f'{GITHUB_URL}/milestones'),
-    (r'^https?://www\.assembla\.com/spaces/portaudio/git/source$', f'{GITHUB_URL}/'),
-    (r'^https?://(www|app)\.assembla\.com/spaces/portaudio/git/source/([^\?]*)(\?.*)?$', f'{GITHUB_URL}/tree/\\2'),
-    (r'^https?://app\.assembla\.com/spaces/portaudio/git/commits/list$', f'{GITHUB_URL}/commits'),
-    (r'^https?://app\.assembla\.com/spaces/portaudio/git/commits/(\w+)$', r'\1'),
-    (r'^https?://git\.assembla\.com/portaudio\.git$', f'{GITHUB_URL}.git'),
+URL_RE_REPLACE = [
+    (r'^https?://(www|app)\.assembla\.com/spaces/{ASSEMBLA_SPACE}/tickets/(\d+)$', r'#\2'),
+    (r'^https?://(www|app)\.assembla\.com/spaces/{ASSEMBLA_SPACE}/tickets$', r'{GITHUB_URL}/issues'),
+    (r'^https?://(www|app)\.assembla\.com/spaces/{ASSEMBLA_SPACE}/tickets\.$', r'{GITHUB_URL}/issues.'),
+    (r'^https?://(www|app)\.assembla\.com/spaces/{ASSEMBLA_SPACE}/tickets/new$', r'{GITHUB_URL}/issues/new'),
+    (r'^https?://(www|app)\.assembla\.com/spaces/{ASSEMBLA_SPACE}/wiki$', r'{GITHUB_URL}/wiki'),
+    (r'^https?://(www|app)\.assembla\.com/spaces/{ASSEMBLA_SPACE}/wiki/(.*)$', r'[[\2]]'),
+    (r'^https?://(www|app)\.assembla\.com/spaces/{ASSEMBLA_SPACE}/milestones$', r'{GITHUB_URL}/milestones'),
+    (r'^https?://(www|app)\.assembla\.com/spaces/{ASSEMBLA_SPACE}/git/source$', r'{GITHUB_URL}/'),
+    (r'^https?://(www|app)\.assembla\.com/spaces/{ASSEMBLA_SPACE}/git/source/([^\?]*)(\?.*)?$', r'{GITHUB_URL}/tree/\2'),
+    (r'^https?://(www|app)\.assembla\.com/spaces/{ASSEMBLA_SPACE}/git/commits/list$', r'{GITHUB_URL}/commits'),
+    (r'^https?://(www|app)\.assembla\.com/spaces/{ASSEMBLA_SPACE}/git/commits/(\w+)$', r'\2'),
+    (r'^https?://git\.assembla\.com/{ASSEMBLA_SPACE}\.git$', r'{GITHUB_URL}.git'),
 ]
-GITHUB_URL_REPLACE = [(re.compile(x[0]), x[1]) for x in _GITHUB_URL_REPLACE]
+_URL_RE = []
 
+# Polling exponential delay
+POLL_INITIAL = 0.1
+POLL_FACTOR = 1.628347746
+POLL_MAX_DELAY = 5
 
 class UnsetMeta(type):
     def __repr__(self):
@@ -259,11 +260,15 @@ def dig(obj, *keys):
 
 def nameorid(user):
     """ Return the name or the id of the user """
+    if not user:
+        return user
     return user.get('name', user.get('id'))
 
 
 def githubuser(user):
     # First try to return '@<githubusername>'
+    if not user:
+        return user
     ghuser = None
     if user:
         ghuser = user.get('github')
@@ -292,24 +297,24 @@ def githubcreatedheader(user, date=None):
     dt = f' at {date}' if date else ''
     name = githubuser(user)
     if name.startswith('@'):
-        return f"Issue created by {name}{dt}"
-    return f"Issue created by {name} on Assembla{dt}"
+        return f"*Issue created by {name}{dt}*"
+    return f"*Issue created by {name} on Assembla{dt}*"
 
 
 def githubcommentedheader(user, date=None):
     dt = f' at {date}' if date else ''
     name = githubuser(user)
     if name.startswith('@'):
-        return f"Comment by {name}{dt}"
-    return f"Comment by {name} on Assembla{dt}"
+        return f"*Comment by {name}{dt}*"
+    return f"*Comment by {name} on Assembla{dt}*"
 
 
 def githubeditedheader(user, date=None, edit='edited'):
     dt = f' at {date}' if date else ''
     name = githubuser(user)
     if name.startswith('@'):
-        return f"Issue {edit} by @{name}{dt}"
-    return f"Issue {edit} by {name} on Assembla{dt}"
+        return f"*Issue {edit} by {name}{dt}*"
+    return f"*Issue {edit} by {name} on Assembla{dt}*"
 
 
 def githubstate(state):
@@ -637,7 +642,8 @@ def wikicommitgenerator(wikiversions, order):
         pages[fname] = v['contents'] or None
 
         yield {
-            'name': p['page_name'] + ':' + str(v['version']),
+            'name': p['page_name'],
+            'version': p['version'],
             'files': {
                 '_Sidebar.md': wikiindexproducer(indexpages),
                 fname: v['contents'] or None,
@@ -646,6 +652,7 @@ def wikicommitgenerator(wikiversions, order):
             'author_email': author.get('email', WIKI_UNKNOWN_EMAIL),
             'message': v['change_comment'] or '',
             'date': now,
+            'latest': v['version'] == p['version'],
         }
 
     # Convert the repo to GitHub format
@@ -663,19 +670,21 @@ def wikicommitgenerator(wikiversions, order):
     if files:
         yield {
             'name': 'ALL',
+            'version': None,
             'pages': pages,
             'files': files,
             'author_name': WIKI_FIXUP_AUTHOR_NAME,
             'author_email': WIKI_FIXUP_AUTHOR_EMAIL,
             'message': WIKI_FIXUP_MESSAGE,
             'date': datetime.now().replace(microsecond=0),
+            'latest': True,
         }
 
 
 def wikiindexproducer(index):
     """ Produce the index menu """
 
-    out = '''# PortAudio
+    out = f'''{WIKI_MENU_HEADING}
 
 '''
     for v in index:
@@ -837,9 +846,9 @@ RE_LINK2 = re.compile(r'^\[\[.*\]\]$', re.M)
 RE_URL = re.compile(r'\bhttps?://([\w\.\-]+)(/[\w\.\-/%#]*)?(\?[\w=%&\.\-$]*)?')
 
 def sub_url(m):
-    """ Replace URLs listed in GITHUB_URL_REPLACE list """
+    """ Replace URLs listed in URL_RE_REPLACE list """
     t = m[0]
-    for r, n in GITHUB_URL_REPLACE:
+    for r, n in _URL_RE:
         t = r.sub(n, t)
     return t
 
@@ -929,12 +938,12 @@ def migratetexttomd(text, ref, page_names=None, migrate_at=False):
     for m in RE_URL.finditer(text):
         if 'assembla' not in m[1]:
             continue
-        logging.warning(f"{ref}: Link to Assembla: '{m[0]}'")
+        logging.warning(f"{ref}: Link to {colorama.Fore.GREEN}Assembla{colorama.Style.RESET_ALL}: '{m[0]}'")
 
     return text
 
 
-def dumpfiles(filename, files, prefix):
+def dumpdict(filename, files, prefix):
     """ Dump the content of dict 'files' into a textfile """
     with open(filename, 'wb') as f:
         for k, v in files.items():
@@ -1124,7 +1133,7 @@ def ticketparser(data):
     #            include=('_state', '_milestone_text', '_labels'))
 
 
-class TimelineRecord:
+class ChangeRecord:
     """ Helper class for tracking the initial value when setting new values
         (where the old value is known)
     """
@@ -1141,22 +1150,10 @@ class TimelineRecord:
         """ Set a new value 'insert' in 'group'. The old value 'remove' is
             removed
         """
-        if isinstance(self.final[group], set):
-            # If the inital value is unset the removed value is the initial value
-            if self.initial[group] is Unset:
-                self.initial[group] = set([remove])
-            v = self.current[group]
-            if v is Unset:
-                v = set([insert])
-            else:
-                v.remove(remove)
-                v.add(insert)
-        else:
-            # If the inital value is unset the removed value is the initial value
-            if self.initial[group] is Unset:
-                self.initial[group] = remove
-            v = insert
-        self.current[group] = v
+        # If the inital value is unset use the removed value is the initial value
+        if self.initial[group] is Unset:
+            self.initial[group] = remove
+        self.current[group] = insert
 
     def getinitial(self):
         """ Return a dict of the calculated initial values """
@@ -1189,44 +1186,46 @@ def tickettimelinegenerator(ticket):
         'assignee': ticket.get('_assigned_to'),
         'priority': ticket.get('_priority'),
         'status': ticket['_status'],
-        'tags': ticket.get('_tags', set()),
-        'keywords': ticket.get('_keywords'),
-        'component': ticket.get('_component'),
+        'tags': ticket.get('_tags', set()) or set(),
+        'keywords': ticket.get('_keywords', set()) or set(),
+        'component': ticket.get('_component', set()) or set(),
     }
 
     # Setup a timeline object. As there is no info in Assembla about what the
     # state was at the start, the TimelineRecord() keeps track of all encountered
     # changes and use this to reconstruct backwards the original state.
     # final is the known final value.
-    timeline = TimelineRecord(final=final, initial={
+    timeline = ChangeRecord(final=final, initial={
         'state': 'open',
         'status': 'New',
     })
 
-    # Setup the first create issue change
+    # Setup the first create issue change, which will be updated later with
+    # the deduced initial state
     first = {
-        'title': ticket['summary'],
-        'body': ticket['description'],
         'user': ticket['_reporter'],
         'date': ticket['_created_on'],
-        'closed': ticket.get('_completed_date', None),
-        'updated': ticket['_updated_at'],
     }
     changes = [first]
 
     lastclose = {}
     for v in ticket['_comments']:
         changedata = {}
+        params = set()
 
         if not v['comment'] and not v['_changes']:
             # logging.warning(f"Ticket #{ticket['number']}: No changes in issue. Skipping.")
             continue
 
-        # Issue comment
+        # Issue comment - Append the comment as a separate change
         if v['comment']:
             changedata.update({
-                'body': v['comment']
+                'body': v['comment'],
+                'user': v['_user'],
+                'date': v['_created_on'],
             })
+            changes.append(changedata)
+            changedata = {}
 
         # Check for changes
         for c in v['_changes']:
@@ -1237,34 +1236,32 @@ def tickettimelinegenerator(ticket):
                 after = githubstate(c['_after']['state'])
                 timeline.set('state', after, before)
                 timeline.set('status', c['_after']['name'], c['_before']['name'])
-                changedata.update({
-                    'state': after,
-                    'status': c['_after']['name'],
-                })
+                params.update(('state', 'status'))
                 continue
 
             elif subject == 'milestone_id':
                 before = dig(c, '_before', 'title')
                 after = dig(c, '_after', 'title')
                 timeline.set('milestone', after, before)
-                changedata.update({
-                    'milestone': after,
-                })
+                params.add('milestone')
                 continue
 
             elif subject == 'assigned_to_id':
                 timeline.set('assignee', c['_after'], c['_before'])
-                changedata.update({
-                    'assignee': c['_after'],
-                })
+                params.add('assignee')
                 continue
 
-            elif subject in ('tags', 'Component', 'Keywords', 'priority'):
+            elif subject == 'priority':
+                timeline.set('priority', c['after'], c['before'])
+                params.add('priority')
+                continue
+
+            elif subject in ('tags', 'Component', 'Keywords'):
                 subject = subject.lower()
-                timeline.set(subject, c['after'] or None, c['before'] or None)
-                changedata.update({
-                    subject: c['after'],
-                })
+                before = set() if not c['before'] else set(c['before'].split(','))
+                after = set() if not c['after'] else set(c['after'].split(','))
+                timeline.set(subject, after, before)
+                params.add(subject)
                 continue
 
             elif subject == 'attachment':
@@ -1282,8 +1279,10 @@ def tickettimelinegenerator(ticket):
             logging.warning(f"Ticket #{ticket['number']}: Unknown change '{c['subject']}'")
 
         # Setup the change and append it
-        if changedata:
+        if params:
             changedata.update({
+                'values': timeline.current.copy(),  # Return a full copy of the current state values
+                'params': params,                   # With params indicating which fields have changed
                 'user': v['_user'],
                 'date': v['_created_on'],
             })
@@ -1300,7 +1299,21 @@ def tickettimelinegenerator(ticket):
             logging.warning(f"Ticket #{ticket['number']}: Ticket close date does not match change history. Time difference: {abs(delta)}")
 
     # Update the first edit entry with the computed starting values
-    first.update({k: v for k, v in timeline.getinitial().items() if v})
+    initial = timeline.getinitial()
+    first.update({
+        'values': initial,
+        'params': set(initial.keys()),
+    })
+
+    # Iterate over the stored current state values to replace any Unset objects with the
+    # initial value for that parameter
+    for change in changes:
+        if 'values' not in change:
+            continue
+        values = change['values']
+        for k, v in values.items():
+            if v is Unset:
+                values[k] = initial[k]
 
     # If the current state does not match the ticket data, the change history is incomplete and
     # must be updated with the final data from the ticket
@@ -1316,7 +1329,112 @@ def tickettimelinegenerator(ticket):
     return changes
 
 
-def check_config(auth, parser, required):
+def tickettogithub(ticket, changes):
+    """
+    Convert ticket with changes list to github format
+    """
+    github = {}
+    key = ticket['number']
+
+    # Conversion to labels
+    labels = set(flatten([
+        ASSEMBLA_TO_GITHUB_LABELS['status'].get(ticket['_status']),
+        ASSEMBLA_TO_GITHUB_LABELS['priority'].get(ticket.get('_priority')),
+        [ASSEMBLA_TO_GITHUB_LABELS['tags'].get(t) for t in ticket.get('tags', [])],
+        [ASSEMBLA_TO_GITHUB_LABELS['keywords'].get(t) for t in ticket.get('_keywords', [])],
+        [ASSEMBLA_TO_GITHUB_LABELS['component'].get(t) for t in ticket.get('_component', [])],
+    ]))
+
+    # Create the github issue object
+    github = {
+        # Description
+        "title": ticket['summary'],
+        "body": migratetexttomd(ticket['description'], f'Ticket #{key}'),
+        "annotation": githubcreatedheader(ticket['_reporter']),
+
+        # Dates
+        "created_at": githubtime(ticket['_created_on']),
+        "updated_at": githubtime(ticket['_updated_at']),
+        "closed_at": githubtime(ticket.get('_completed_date')),
+
+        # Users
+        "reporter": githubuser(ticket.get('_reporter')),
+        "assignee": githubuser(ticket.get('_assigned_to')),
+
+        # Meta fields
+        "milestone": dig(ticket, '_milestone', 'title'),
+        "closed": not ticket['state'],
+        "labels": labels,
+    }
+
+    # Iterate over the changes
+    prev = {}
+    ghchanges = []
+    for i, change in enumerate(changes):
+        ckey = f'{key}.{i}'
+
+        # Create the change object for the github data
+        ghchange = {
+            "user": githubuser(change['user']),
+            "date": githubtime(change['date']),
+        }
+        ghchanges.append(ghchange)
+
+        # The change is a comment
+        if change.get('body'):
+            ghchange.update({
+                "body": migratetexttomd(change.get('body'), f'Ticket #{ckey}'),
+                "annotation": githubcommentedheader(change['user']),
+            })
+
+        # The change is an edit of issue meta-data
+        values = change.get('values', {}).copy()
+        if values:
+            labels = set(flatten([
+                ASSEMBLA_TO_GITHUB_LABELS['status'].get(values['status']),
+                ASSEMBLA_TO_GITHUB_LABELS['priority'].get(values['priority']),
+                [ASSEMBLA_TO_GITHUB_LABELS['tags'].get(t) for t in values['tags'] or []],
+                [ASSEMBLA_TO_GITHUB_LABELS['keywords'].get(t) for t in values['keywords']],
+                [ASSEMBLA_TO_GITHUB_LABELS['component'].get(t) for t in values['component']],
+            ]))
+
+            # Generate the github state values
+            ghvalues = {
+                "labels": labels,
+                "closed": values['state'] == 'closed',
+                "milestone": values['milestone'],
+                "assignee": githubuser(values['assignee']),
+            }
+
+            # Add them to the change. Indicate which fields have changed
+            ghchange.update({
+                "values": ghvalues,
+                "params": set(k for k in ghvalues if prev.get(k) != ghvalues[k]),
+            })
+
+            # Set annotation text when issue is opening or closing
+            if 'closed' in prev:
+                if not prev['closed'] and ghvalues['closed']:
+                    ghchange["annotation"] = githubeditedheader(change['user'], edit='closed')
+                if prev['closed'] and not ghvalues['closed']:
+                    ghchange["annotation"] = githubeditedheader(change['user'], edit='reopened')
+
+            prev = ghvalues
+
+    return (github, ghchanges)
+
+
+def check_config(config, parser, required):
+
+    missing = [
+        k for k in required
+        if k not in config or not config[k] or (config[k].startswith('**') and config[k].endswith('**'))
+    ]
+    if missing:
+        parser.error(f"Missing config file fields: {' '.join(missing)}")
+
+
+def check_authconfig(auth, parser, required):
 
     # Ensure we have auth data and the fields needed
     if not auth:
@@ -1326,7 +1444,7 @@ def check_config(auth, parser, required):
         if k not in auth or not auth[k] or (auth[k].startswith('**') and auth[k].endswith('**'))
     ]
     if missing:
-        parser.error(f"Missing auth fields: {' '.join(missing)}")
+        parser.error(f"Missing auth file fields: {' '.join(missing)}")
 
 
 class ColorFormatter(logging.Formatter):
@@ -1346,56 +1464,67 @@ class ColorFormatter(logging.Formatter):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--verbose', '-v', action="count", default=0, help='verbose logging')
-    parser.add_argument('--dumpfile', '-f', metavar="FILE", required=True, help='assembla dumpfile')
-    parser.add_argument('--wikidump', '-w', metavar="FILE", help="wiki dumpfile")
-    parser.add_argument('--userdump', '-u', metavar="FILE", help="user dumpfile")
-    parser.add_argument('--auth', '-a', help='Authentication config')
+    parser.add_argument('--config', '-c', metavar="JSON", help="Configuration file")
+    parser.add_argument('--auth', '-a', metavar="JSON", help='Authentication config')
     subparser = parser.add_subparsers(dest="command", required=True, title="command", help="Command to execute")
 
-    subcmd = subparser.add_parser('dump', help="Dump assembla tables")
+    subcmd = subparser.add_parser('dump', help="Dump assembla database tables")
     subcmd.add_argument('table', nargs='?', help="Table to dump")
-    subcmd.add_argument('--headers', action="store_true", help="Dump header fields")
+    subcmd.add_argument('--headers', '-H', action="store_true", help="Dump header fields")
     subcmd.add_argument('--include', '-i', action="append", help="Fields to include")
     subcmd.add_argument('--exclude', '-x', action="append", help="Fields to exclude")
     subcmd.add_argument('--limit', '-l', type=int, help="Limit the number of lines")
     subcmd.set_defaults(func=cmd_dump)
+
+    subcmd = subparser.add_parser('lstickets', help="List tickets")
+    subcmd.add_argument('--quiet', '-q', action="store_true", help="Do not print tickets")
+    subcmd.add_argument('--github', '-g', action="store_true", help="Show tickets after github field conversion")
+    subcmd.add_argument('--description', '-d', action="store_true", help="Show description fields")
+    subcmd.add_argument('--comments', '-c', action="store_true", help="Show comment fields")
+    subcmd.add_argument('--content-before', '-B', required=False, help="Dump ticket contents before convert")
+    subcmd.add_argument('--content-after', '-A', required=False, help="Dump ticket contents after convert")
+    subcmd.add_argument('issue', nargs="*", help="Issue to print")
+    subcmd.set_defaults(func=cmd_lstickets)
 
     subcmd = subparser.add_parser('lsusers', help="List users")
     subcmd.add_argument('--table', '-t', action="append", help="Show only users from this table")
     subcmd.set_defaults(func=cmd_lsusers)
 
     subcmd = subparser.add_parser('lswiki', help="List wiki pages")
-    subcmd.add_argument('--changes', action="store_true", help="Show page changes")
+    subcmd.add_argument('--quiet', '-q', action="store_true", help="Do not print tickets")
+    subcmd.add_argument('--changes', '-c', action="store_true", help="Show page changes")
+    subcmd.add_argument('--content', '-d', action="store_true", help="Show page content")
+    subcmd.add_argument('--tables', '-t', action="store_true", help="Show as tables")
+    subcmd.add_argument('--content-before', '-B', required=False, help="Dump wiki contents before convert")
+    subcmd.add_argument('--content-after', '-A', required=False, help="Dump wiki contents after convert")
     subcmd.set_defaults(func=cmd_lswiki)
 
     subcmd = subparser.add_parser('ticketsconvert', help="Convert tickets to GitHub repo")
-    subcmd.add_argument('repo', help="GitHub repository")
     subcmd.add_argument('--dry-run', '-n', action="store_true", help="Only check the data")
     subcmd.add_argument('--mk1', action="store_true", help="Use the old GitHub importer")
-    subcmd.add_argument('--content-before', '-B', required=False, help="Dump ticket contents before convert (for debug)")
-    subcmd.add_argument('--content-after', '-A', required=False, help="Dump ticket contents after convert (for debug)")
-    subcmd.set_defaults(func=cmd_tickets)
+    subcmd.set_defaults(func=cmd_ticketsconvert)
 
     subcmd = subparser.add_parser('userscrape', help="Scrape users from Assembla")
-    subcmd.add_argument('dump', help="Output file to store users scrape")
+    subcmd.add_argument('out', help="Output file to store users scrape")
     subcmd.set_defaults(func=cmd_userscrape)
 
     subcmd = subparser.add_parser('wikiconvert', help="Convert to GitHub wiki repo")
-    subcmd.add_argument('repo', help="GitHub repository")
+    subcmd.add_argument('dir', help="Working dir for wiki git repo")
     subcmd.add_argument('--dry-run', '-n', action="store_true", help="Do not commit any data")
-    subcmd.add_argument('--no-convert', action="store_true", help="Do not commit conversion change")
-    subcmd.add_argument('--content-before', '-B', required=False, help="Dump wiki contents before convert (for debug)")
-    subcmd.add_argument('--content-after', '-A', required=False, help="Dump wiki contents after convert (for debug)")
+    subcmd.add_argument('--no-convert', action="store_true", help="Do not commit markdown conversion changes")
     subcmd.set_defaults(func=cmd_wikiconvert)
 
     subcmd = subparser.add_parser('wikiscrape', help="Scrape wiki from Assembla")
-    subcmd.add_argument('dump', help="Output file to store wiki scrape")
+    subcmd.add_argument('out', help="Output file to store wiki scrape")
     subcmd.set_defaults(func=cmd_wikiscrape)
 
-    runoptions = parser.parse_args()
+    options = parser.parse_args()
+
+    # -------------------------------------------------------------------------
+    #  Logging
 
     # log to stdout
-    logging_level = logging.DEBUG if runoptions.verbose > 1 else logging.INFO
+    logging_level = logging.DEBUG if options.verbose > 1 else logging.INFO
     root = logging.getLogger()
     root.setLevel(logging_level)
     channel = logging.StreamHandler(sys.stdout)
@@ -1405,19 +1534,41 @@ def main():
     root.addHandler(channel)
 
     # -------------------------------------------------------------------------
+    #  Read config file
+
+    config = {
+        'parser': parser,
+        'options': options,
+    }
+    configfile = options.config
+    if not configfile and pathlib.Path("config.json").exists():
+        configfile = 'config.json'
+    if configfile:
+        logging.info(f"Reading configuration from '{configfile}'")
+        with open(configfile, 'r') as f:
+            config = json.load(f)
+
+    # Check for required config fields
+    check_config(config, parser, ('dumpfile', ))
+
+    # -------------------------------------------------------------------------
     #  Read auth file
 
     auth = {}
-    if runoptions.auth:
-        logging.info(f"Reading authentication data from '{runoptions.auth}'")
-        with open(runoptions.auth, 'r') as f:
+    authfile = options.auth
+    if not authfile and pathlib.Path("auth.json").exists():
+        authfile = 'auth.json'
+    if authfile:
+        logging.info(f"Reading authentication data from '{authfile}'")
+        with open(authfile, 'r') as f:
             auth = json.load(f)
+    config['auth'] = auth
 
     # -------------------------------------------------------------------------
     #  Read the dump file
 
-    logging.info(f"Parsing dumpfile '{runoptions.dumpfile}'")
-    with open(runoptions.dumpfile, encoding='utf8') as filereader:
+    logging.info(f"Parsing dumpfile '{config['dumpfile']}'")
+    with open(config['dumpfile'], encoding='utf8') as filereader:
         data = DictPlus()
         tablefields = {}
 
@@ -1457,11 +1608,11 @@ def main():
     # -------------------------------------------------------------------------
     #  Read the wiki dump data
 
-    if runoptions.wikidump:
+    if 'wikidump' in config:
 
-        logging.info(f"Parsing wiki dumpfile '{runoptions.wikidump}'")
+        logging.info(f"Parsing wiki dumpfile '{config['wikidump']}'")
 
-        with open(runoptions.wikidump, encoding='utf8') as filereader:
+        with open(config['wikidump'], encoding='utf8') as filereader:
             wikidata = json.load(filereader)
 
         # Merge the file data with the main assembla database
@@ -1479,36 +1630,48 @@ def main():
     # -------------------------------------------------------------------------
     #  Read the user dump data
 
-    if runoptions.userdump:
+    if 'userdump' in config:
 
-        logging.info(f"Parsing user dumpfile '{runoptions.userdump}'")
+        logging.info(f"Parsing user dumpfile '{config['userdump']}'")
 
-        with open(runoptions.userdump, encoding='utf8') as filereader:
+        with open(config['userdump'], encoding='utf8') as filereader:
             userdata = json.load(filereader)
 
         # Merge the file data with the main assembla database
         mergeuserdata(userdata, data['_index']['_users'])
 
     # -------------------------------------------------------------------------
+    # Initialize the URL replace regexps
+
+    if 'repo' in config:
+        space = data["spaces"][0]["name"].lower()
+        url = "https://github.com/" + config['repo']
+        global _URL_RE
+        for k in URL_RE_REPLACE:
+            k0 = k[0].replace('{ASSEMBLA_SPACE}', space)
+            k1 = k[1].replace('{GITHUB_URL}', url)
+            _URL_RE.append((re.compile(k0), k1))
+
+    # -------------------------------------------------------------------------
     # Run the command
 
     # Set the verbosity
-    logging_level = logging.DEBUG if runoptions.verbose else logging.INFO
+    logging_level = logging.DEBUG if options.verbose else logging.INFO
     root.setLevel(logging_level)
     channel.setLevel(logging_level)
 
-    logging.info(f"Executing command '{runoptions.command}'")
-    runoptions.func(parser, runoptions, auth, data)
+    logging.info(f"Executing command '{options.command}'")
+    options.func(parser, options, config, auth, data)
 
 
 # -----------------------------------------------------------------------------
 #  Dump table command
-def cmd_dump(parser, runoptions, auth, data):
+def cmd_dump(parser, options, config, auth, data):
 
-    if not runoptions.table:
+    if not options.table:
 
         tables = sorted(data.keys())
-        if runoptions.headers:
+        if options.headers:
             print("Assembla table fields:")
             headers = [
                 {
@@ -1524,24 +1687,24 @@ def cmd_dump(parser, runoptions, auth, data):
         printtable([{'table': t} for t in tables])
         return
 
-    table = data.get(runoptions.table)
+    table = data.get(options.table)
     if not table:
-        parser.error(f"No such table: '{runoptions.table}'")
+        parser.error(f"No such table: '{options.table}'")
 
     srange = None
-    if runoptions.limit:
-        srange = slice(0, runoptions.limit)
+    if options.limit:
+        srange = slice(0, options.limit)
 
-    print(f"Table '{runoptions.table}':")
-    printtable(table, include=runoptions.include, exclude=runoptions.exclude, slice=srange)
+    print(f"Table '{options.table}':")
+    printtable(table, include=options.include, exclude=options.exclude, slice=srange)
 
 
 # -----------------------------------------------------------------------------
 #  Print users
-def cmd_lsusers(parser, runoptions, auth, data):
+def cmd_lsusers(parser, options, config, auth, data):
     users = data["_index"]["_users"]
-    tables = set(runoptions.table or [])
-    if runoptions.table:
+    tables = set(options.table or [])
+    if options.table:
         logging.info(f"Showing users present in tables: {' '.join(tables)}")
         users = list(filter(lambda v: any(v['tables'].intersection(tables)), users.values()))
 
@@ -1550,10 +1713,10 @@ def cmd_lsusers(parser, runoptions, auth, data):
 
 # -----------------------------------------------------------------------------
 #  User scrape from Assembla
-def cmd_userscrape(parser, runoptions, auth, data):
+def cmd_userscrape(parser, options, config, auth, data):
 
     # Check for required auth fields
-    check_config(auth, parser, ('assembla_key', 'assembla_secret'))
+    check_authconfig(auth, parser, ('assembla_key', 'assembla_secret'))
 
     headers = {
         'X-Api-Key': auth['assembla_key'],
@@ -1581,30 +1744,71 @@ def cmd_userscrape(parser, runoptions, auth, data):
         out.append(jsdata)
 
     # Save the entries to disk
-    with open(runoptions.dump, 'w') as f:
+    logging.info(f"Saving user data in '{options.out}'")
+    with open(options.out, 'w') as f:
         json.dump(out, f)
 
 
 # -----------------------------------------------------------------------------
 #  List wiki pages
-def cmd_lswiki(parser, runoptions, auth, data):
+def cmd_lswiki(parser, options, config, auth, data):
+
+    tprint = print
+    if options.quiet or options.tables:
+        tprint = lambda *a: None
 
     # Parse the wiki entries (making rich additions to objects in data) and
     # return the order of wiki pages
     wikiorder = wikiparser(data)
 
-    if not runoptions.changes:
-        printtable(wikiorder, exclude=('space_id', 'contents'))
-    else:
-        printtable(data['wiki_page_versions'], exclude=('contents',))
+    # Iterate over each wiki page version in order from old to new and get
+    # the data required for git commit
+    for commit in wikicommitgenerator(data['wiki_page_versions'], wikiorder):
+
+        if not commit['latest'] and not options.changes:
+            continue
+
+        tprint(f"""Wiki page {commit['name']}, Revision {commit['version']}
+          Date    : {commit['date']}
+          Author  : {commit['author_name']} <{commit['author_email']}>
+          Message : {commit['message']}""")
+
+        for f, content in commit['files'].items():
+            ftext = f"{f}   MISSING DATA" if not content else f"{f}   {len(content)} bytes"
+            pdata = ''
+            if options.content:
+                pdata = f'''
+{"_"*120}
+{content}
+{"_"*120}'''
+            tprint(f"            {ftext}{pdata}")
+
+        tprint()
+
+        # The 'ALL' is the last entry where the pages have been converted to GitHub markdown
+        if commit['name'] == 'ALL':
+
+            # Dump wiki pages to files (for comparisons)
+            keys = list(commit['pages'].keys())
+            if options.content_before:
+                dumpdict(options.content_before, {k: commit['pages'].get(k) for k in keys}, 'Page ')
+            if options.content_after:
+                dumpdict(options.content_after, {k: commit['files'].get(k) for k in keys}, 'Page ')
+
+    # Print the wiki data
+    if options.tables and not options.quiet:
+        if not options.changes:
+            printtable(wikiorder, exclude=('space_id', 'contents'))
+        else:
+            printtable(data['wiki_page_versions'], exclude=('contents',))
 
 
 # -----------------------------------------------------------------------------
 #  WIKI scrape from Assembla
-def cmd_wikiscrape(parser, runoptions, auth, data):
+def cmd_wikiscrape(parser, options, config, auth, data):
 
     # Check for required auth fields
-    check_config(auth, parser, ('assembla_key', 'assembla_secret'))
+    check_authconfig(auth, parser, ('assembla_key', 'assembla_secret'))
 
     headers = {
         'X-Api-Key': auth['assembla_key'],
@@ -1636,23 +1840,28 @@ def cmd_wikiscrape(parser, runoptions, auth, data):
         out.append(jsdata)
 
     # Save the entries to disk
-    logging.info(f"Saving wiki scrape data in '{runoptions.dump}'")
-    with open(runoptions.dump, 'w') as f:
+    logging.info(f"Saving wiki scrape data in '{options.out}'")
+    with open(options.out, 'w') as f:
         json.dump(out, f)
 
 
 # -----------------------------------------------------------------------------
 #  WIKI conversion
-def cmd_wikiconvert(parser, runoptions, auth, data):
+def cmd_wikiconvert(parser, options, config, auth, data):
 
-    wikidir = pathlib.Path(runoptions.repo.split('/')[-1] + '.wiki')
+    # Check for required config fields
+    check_config(config, parser, ('repo', ))
+
+    # Check for required auth fields
+    # check_authconfig(auth, parser, ('username', 'password'))
+
+    wikidir = pathlib.Path(options.dir)
     wikirepo = wikidir
-    wikirepo.mkdir(exist_ok=True)
 
     # Open git repo
     repo = None
-    if not runoptions.dry_run:
-        repo = git.Repo.clone_from('https://github.com/' + runoptions.repo + '.wiki.git', wikirepo)
+    if not options.dry_run:
+        repo = git.Repo.clone_from('https://github.com/' + config['repo'] + '.wiki.git', wikidir)
         wikirepo = pathlib.Path(repo.working_tree_dir)
 
     # Parse the wiki entries (making rich additions to objects in data) and
@@ -1666,12 +1875,13 @@ def cmd_wikiconvert(parser, runoptions, auth, data):
     # the data required for git commit
     for commit in wikicommitgenerator(data['wiki_page_versions'], wikiorder):
 
-        logging.debug(f"Converting page '{commit['name']}'")
+        name = f"{commit['name']}:{commit['version']}"
+        logging.debug(f"Converting page '{name}'")
 
         files = []
         for name, contents in commit['files'].items():
             if not contents:
-                logging.warning(f"Missing page data for {commit['name']}")
+                logging.warning(f"Missing page data for {name}")
                 continue
             fname = pathlib.Path(wikirepo, name)
             fname.write_bytes(contents.encode())
@@ -1687,15 +1897,8 @@ def cmd_wikiconvert(parser, runoptions, auth, data):
         # The 'ALL' is the last entry where the pages have been converted to GitHub markdown
         if commit['name'] == 'ALL':
 
-            # Dump wiki pages to files (for comparisons)
-            keys = list(commit['pages'].keys())
-            if runoptions.content_before:
-                dumpfiles(runoptions.content_before, {k: commit['pages'].get(k) for k in keys}, 'Page ')
-            if runoptions.content_after:
-                dumpfiles(runoptions.content_after, {k: commit['files'].get(k) for k in keys}, 'Page ')
-
             # Skip commit of convert if --no-convert is used
-            if runoptions.no_convert:
+            if options.no_convert:
                 continue
 
         # Commit the changes
@@ -1708,24 +1911,159 @@ def cmd_wikiconvert(parser, runoptions, auth, data):
                 commit_date=date,
             )
 
-    logging.info(f"Conversion complete. Remember to push the git repo in '{wikidir}'")
+    logging.info(f"Conversion complete. '{wikidir}' contains converted Wiki repo. Please review and push")
+
+
+# -----------------------------------------------------------------------------
+#  List tickets
+def cmd_lstickets(parser, options, config, auth, data):
+
+    tprint = print
+    if options.quiet:
+        tprint = lambda *a: None
+
+    # Prep the dataset for conversion
+    ticketparser(data)
+
+    before = {}
+    after = {}
+
+    for ticket in sorted(data['tickets'], key=lambda v: v['number']):
+
+        if options.issue and str(ticket['number']) not in options.issue:
+            continue
+
+        # Save the description before conversion
+        before[f"#{ticket['number']} Description"] = ticket['description']
+
+        # Get the timeline for the ticket
+        changes = tickettimelinegenerator(ticket)
+
+        # Save the comments before conversion
+        for i, change in enumerate(changes):
+            if change.get('body'):
+                before[f"#{ticket['number']} Comment {i}"] = change['body']
+
+        # Convert the issue to github data
+        issue, ghchanges = tickettogithub(ticket, changes)
+
+        # Save the description after conversion
+        after[f"#{ticket['number']} Description"] = issue['body']
+
+        # Save the comments after conversion
+        for i, change in enumerate(ghchanges):
+            if change.get('body'):
+                after[f"#{ticket['number']} Comment {i}"] = change['body']
+
+        if options.github:
+            changes = ghchanges
+            body = issue['body']
+        else:
+            body = ticket['description']
+
+        description = ''
+        if options.description:
+            description = f'''
+{"_"*120}
+{body.rstrip()}
+{"_"*120}'''
+
+        if options.github:
+            tprint(f"""#{ticket['number']}  {issue['title']}
+          Description : {len(issue['body'])} bytes{description}
+          Closed      : {issue['closed']}
+          Reporter    : {issue['reporter']}
+          Assignee    : {issue['assignee']}
+          Created     : {issue['created_at']}
+          Closed at   : {issue['closed_at']}
+          Updated at  : {issue['updated_at']}
+          Milestone   : {issue['milestone']}
+          Labels      : {issue['labels']}
+""")
+        else:
+            tprint(f"""#{ticket['number']}  {ticket['summary']}
+          Description : {len(ticket['description'])} bytes{description}
+          Status      : {ticket['_status']}  ({ticket['_state']})
+          Reporter    : {nameorid(ticket['_reporter'])}
+          Assignee    : {nameorid(ticket.get('_assigned_to'))}
+          Created     : {ticket.get('created_on')}
+          Closed      : {ticket.get('completed_date')}
+          Milestone   : {dig(ticket, '_milestone', 'title')}
+          Priority    : {ticket.get('_priority')}
+          Keywords    : {ticket.get('_keywords')}
+          Component   : {ticket.get('_component')}
+          Tags        : {ticket.get('_tags')}
+""")
+
+        for i, change in enumerate(changes):
+
+            user = change['user']
+            if not options.github:
+                user = nameorid(user)
+
+            if change.get('body'):
+                tprint(f"            ({i})  COMMENT  {change['date']}  {user}")
+
+            if change.get('params'):
+                op = 'CREATE' if i == 0 else 'CHANGE'
+                tprint(f"            ({i})  {op:7s}  {change['date']}  {user}")
+
+            if i == 0 and options.github:
+                change['annotation'] = issue['annotation']
+            if 'annotation' in change:
+                tprint(f"                   {colorama.Fore.CYAN}{'Annotation':10s}{colorama.Style.RESET_ALL} : {change['annotation']}")
+
+            if change.get('body'):
+                comment = ''
+                if options.comments:
+                    comment = f'''
+{"_"*120}
+{change['body'].rstrip()}
+{"_"*120}'''
+                tprint(f"                   {'Comment':10s} : {len(change['body'])} bytes{comment}")
+
+            values = change.get('values', {})
+            params = change.get('params', set())
+            # if params:
+            #    print(f"                   {'Params':10s} : {params}")
+
+            for k in params:
+                v = values[k]
+                if k == 'state':
+                    continue
+                if k == 'assignee' and not options.github:
+                    v = nameorid(values['assignee'])
+                if k == 'status':
+                    v = f"{v}  ({values['state']})"
+                tprint(f"                   {k.capitalize():10s} : {v}")
+
+        tprint()
+
+    # Dump ticket comments to files (for comparisons)
+    if options.content_before:
+        dumpdict(options.content_before, before, 'Ticket ')
+    if options.content_after:
+        dumpdict(options.content_after, after, 'Ticket ')
 
 
 # -----------------------------------------------------------------------------
 #  Tickets conversion
-def cmd_tickets(parser, runoptions, auth, data):
+def cmd_ticketsconvert(parser, options, config, auth, data):
+
+    # Check for required config fields
+    check_config(config, parser, ('repo', ))
 
     # Check for required auth fields
-    check_config(auth, parser, ('username', 'password'))
+    check_authconfig(auth, parser, ('username', 'password'))
 
     # Prep the dataset for conversion
     ticketparser(data)
 
     # establish github connection
     repo = None
-    if not runoptions.dry_run:
+    if not options.dry_run:
         ghub = github.Github(auth['username'], auth['password'])
-        repo = ghub.get_repo(runoptions.repo)
+        repo = ghub.get_repo(config['repo'])
 
     # -------------------------------------------------------------------------
     #  MILESTONES
@@ -1798,146 +2136,6 @@ def cmd_tickets(parser, runoptions, auth, data):
 
     logging.info('Converting tickets -> issues...')
 
-    if runoptions.mk1:
-        github_import_mk1(parser, runoptions, auth, data, repo, github_issues, github_milestones)
-    else:
-        github_import_mk2(parser, runoptions, auth, data, repo, github_issues, github_milestones)
-
-
-def github_import_mk1(parser, runoptions, auth, data, repo, github_issues, github_milestones):
-
-    before = {}
-    after = {}
-
-    for ticket in sorted(data['tickets'], key=lambda v: v['number']):
-        assemblakey = ticket['number']
-        # logging.debug(f"{colorama.Fore.GREEN}Ticket #{assemblakey}{colorama.Style.RESET_ALL}")
-
-        if repo:
-            githubissue = findfirst(lambda v: v.number == assemblakey, github_issues)
-            if githubissue:
-                logging.info(f"    Skipping existing issue {assemblakey}")
-                continue
-
-        state = {
-            'milestone': github.GithubObject.NotSet,
-            'assignees': github.GithubObject.NotSet,
-            'labels': github.GithubObject.NotSet,
-        }
-
-        for i, change in enumerate(tickettimelinegenerator(ticket), start=1):
-            key = f"#{assemblakey}.{i}"
-            # logging.debug(f"{colorama.Fore.MAGENTA}    {key}{colorama.Style.RESET_ALL}")
-
-            body = change.get('body')
-            if body:
-                before[key] = body
-                body = migratetexttomd(body, 'Ticket ' + key)
-                after[key] = body
-
-            # Convert to github values
-            if 'assignee' in change:
-                change['assignee'] = githubassignee(change['assignee'], assemblakey)
-            if 'milestone' in change:
-                milestone = findfirst(lambda v: v.title == change['milestone'], github_milestones)
-                change['milestone'] = milestone or github.GithubObject.NotSet
-
-            # Record the changes into the state record
-            for param in ('state', 'priority', 'milestone', 'status', 'tags', 'keywords', 'component', 'assignee'):
-                if param in change:
-                    state[param] = change[param]
-
-            # Compile the current label state
-            prev = state['labels']
-            state['labels'] = flatten([
-                ASSEMBLA_TO_GITHUB_LABELS['status'].get(state.get('status')),
-                ASSEMBLA_TO_GITHUB_LABELS['priority'].get(state.get('priority')),
-                [ASSEMBLA_TO_GITHUB_LABELS['tags'].get(t) for t in state.get('tags', [])],
-                [ASSEMBLA_TO_GITHUB_LABELS['keywords'].get(t) for t in state.get('keywords', [])],
-                [ASSEMBLA_TO_GITHUB_LABELS['component'].get(t) for t in state.get('component', [])],
-            ])
-            if prev != state['labels']:
-                change['labels'] = True
-
-            def _rmbody(iter):
-                d = iter.copy()
-                if 'body' in d:
-                    lines = d['body'].split('\n')
-                    d['body'] = f"{lines[0]} + {len(lines)} lines, {len(d['body'])} bytes"
-                return d
-
-            if i == 1:
-
-                req = dict(
-                    title=change['title'],
-                    body=githubcreatedheader(change['user'], change['date']) + '\n\n' + body,
-                    labels=state.get('labels'),
-                    milestone=state.get('milestone') or github.GithubObject.NotSet,
-                    assignees=state.get('assignee') or github.GithubObject.NotSet,
-                )
-                logging.debug(f"{key} CREATE {_rmbody(req)}")
-
-                if repo:
-                    # create_issue(title, body=NotSet, assignee=NotSet, milestone=NotSet, labels=NotSet,
-                    #              assignees=NotSet)
-                    githubissue = repo.create_issue(**req)
-                    if githubissue.number != assemblakey:
-                        logging.error(f"GitHub created issue #{githubissue.number} for Assembla id #{assemblakey}")
-                continue
-
-            isedit = any([x in change for x in ('milestone', 'labels', 'assignee', 'state')])
-
-            if body:
-                req = dict(
-                    body=githubcommentedheader(change['user'], change['date']) + '\n\n' + body,
-                )
-                logging.debug(f"{key} COMMENT {_rmbody(req)}")
-
-                if repo:
-                    # create_comment(body)
-                    githubissue.create_comment(**req)
-
-            if isedit:
-
-                if not body:
-                    req = dict(
-                        body=githubeditedheader(change['user'], change['date']),
-                    )
-                    logging.debug(f"{key} COMMENT {_rmbody(req)}")
-
-                    if repo:
-                        # create_comment(body)
-                        githubissue.create_comment(**req)
-
-                req = dict(
-                    labels=state.get('labels'),
-                    milestone=state.get('milestone') or github.GithubObject.NotSet,
-                    assignees=state.get('assignee') or github.GithubObject.NotSet,
-                    state=state.get('state'),
-                )
-                logging.debug(f"{key} EDIT {_rmbody(req)}")
-
-                if repo:
-                    # edit(title=NotSet, body=NotSet, assignee=NotSet, state=NotSet, milestone=NotSet,
-                    #      labels=NotSet, assignees=NotSet)
-                    githubissue.edit(**req)
-
-            # FIXME: Mundane rate limit
-            if repo:
-                time.sleep(0.1)
-
-    # Dump ticket comments to files (for comparisons)
-    if runoptions.content_before:
-        dumpfiles(runoptions.content_before, before, 'Ticket ')
-    if runoptions.content_after:
-        dumpfiles(runoptions.content_after, after, 'Ticket ')
-
-
-def github_import_mk2(parser, runoptions, auth, data, repo, github_issues, github_milestones):
-
-    before = {}
-    after = {}
-
     for ticket in sorted(data['tickets'], key=lambda v: v['number']):
         key = ticket['number']
         logging.debug(f"{colorama.Fore.GREEN}Ticket #{key}{colorama.Style.RESET_ALL}")
@@ -1948,26 +2146,17 @@ def github_import_mk2(parser, runoptions, auth, data, repo, github_issues, githu
                 logging.info(f"    Skipping existing issue {key}")
                 continue
 
-        body = ticket['description']
-        if body:
-            before[key] = body
-            body = migratetexttomd(body, f'Ticket #{key}')
-            after[key] = body
+        # Get the timeline changes for the ticket
+        changes = tickettimelinegenerator(ticket)
 
-        milestone = dig(ticket, '_milestone', 'title')
+        # Convert the issue to github data
+        ghissue, ghchanges = tickettogithub(ticket, changes)
+
+        # Find the GH milestone
+        milestone = ghissue['milestone']
         ghmilestone = findfirst(lambda v: v.title == milestone, github_milestones)
         if ghmilestone:
             ghmilestone = ghmilestone.number
-
-        labels = flatten([
-            ASSEMBLA_TO_GITHUB_LABELS['status'].get(ticket['_status']),
-            ASSEMBLA_TO_GITHUB_LABELS['priority'].get(ticket['_status']),
-            [ASSEMBLA_TO_GITHUB_LABELS['tags'].get(t) for t in ticket.get('tags', [])],
-            [ASSEMBLA_TO_GITHUB_LABELS['keywords'].get(t) for t in ticket.get('_keywords', [])],
-            [ASSEMBLA_TO_GITHUB_LABELS['component'].get(t) for t in ticket.get('_component', [])],
-        ])
-
-        closed = not ticket['state']
 
         #   "issue": {
         #     "title": "Imported from some other system",
@@ -1984,17 +2173,17 @@ def github_import_mk2(parser, runoptions, auth, data, repo, github_issues, githu
         #     ]
         #   },
         issue = {
-            'title': ticket['summary'],
-            'body': githubcreatedheader(ticket['_reporter']) + '\n\n' + body,
-            'created_at': githubtime(ticket['_created_on']),
-            'updated_at': githubtime(ticket['_updated_at']),
-            'assignee': None,  # githubassignee(ticket.get('_assigned_to'), key),
+            'title': ghissue['title'],
+            'body': ghissue['annotation'] + '\n\n' + ghissue['body'],
+            'created_at': ghissue['created_at'],
+            'updated_at': ghissue['updated_at'],
+            'assignee': None,  # Don't want to migrate assignee
             'milestone': ghmilestone,
-            'closed': closed,
-            'labels': labels,
+            'closed': ghissue['closed'],
+            'labels': list(ghissue['labels']),
         }
-        if closed:
-            issue['closed_at'] = githubtime(ticket.get('_completed_date'))
+        if ghissue['closed']:
+            issue['closed_at'] = ghissue['closed_at']
 
         #    "comments": [
         #    {
@@ -2003,41 +2192,22 @@ def github_import_mk2(parser, runoptions, auth, data, repo, github_issues, githu
         #    }
         #    ]
         comments = []
-        n = 0
-        for v in ticket['_comments']:
-            if not v['comment']:
+        for change in ghchanges:
+
+            if 'annotation' not in change:
                 continue
-            n += 1
-            ckey = f'{key}.{n}'
 
-            astate = bstate = None
-            for c in v['_changes']:
-                if c['subject'] == 'status':
-                    bstate = c['_before']['state']
-                    astate = c['_after']['state']
-
-            body = v['comment']
-            if body:
-                before[ckey] = body
-                body = migratetexttomd(body, f'Ticket #{ckey}')
-                after[ckey] = body
+            body = ''
+            if change.get('body'):
+                body = '\n\n' + change.get('body')
 
             comments.append({
-                'body': githubcommentedheader(v['_user']) + '\n\n' + body,
-                'created_at': githubtime(v['_created_on']),
+                'created_at': change['date'],
+                'body': change['annotation'] + body,
             })
 
-            if astate != bstate:
-                if not astate and bstate:
-                    action = 'closed'
-                else:
-                    action = 'reopened'
-                comments.append({
-                    'body': githubeditedheader(v['_user'], edit=action),
-                    'created_at': githubtime(v['_created_on']),
-                })
-
-        url = f'https://api.github.com/repos/{runoptions.repo}/import/issues'
+        # Setup GitHub POST request data
+        url = f"https://api.github.com/repos/{config['repo']}/import/issues"
         gauth = (auth['username'], auth['password'])
         headers = {
             'Accept': 'application/vnd.github.golden-comet-preview+json'
@@ -2048,22 +2218,69 @@ def github_import_mk2(parser, runoptions, auth, data, repo, github_issues, githu
         }
 
         if repo:
+
+            logging.info(f"  Uploading ticket #{key}")
+
+            # Post the issue data
+            print("   ", end='')
             res = requests.post(url, json=jdata, auth=gauth, headers=headers)
+            resjson = res.json()
+
+            # print(f"    URL:     {url}")
+            # print(f"    RETURN:  {res.status_code}")
+            # print(f"    HEADERS: {res.headers}")
+            # print(f"    JSON:    {resjson}")
+
             if res.status_code != 202:
-                pprint(jdata)
-                print(f"RETURN:  {res.status_code}")
-                print(f"HEADERS: {res.headers}")
-                print(f"JSON:    {res.json()}")
+                print('  failed')
+                logging.error(f"Failed to upload ticket #{key}. Status code {res.status_code} returned")
+                if 'message' in resjson:
+                    logging.error(f"Response text: {resjson['message']}")
                 break
 
-            print(f"   Remain: {res.headers['X-RateLimit-Remaining']}")
-            time.sleep(1)
+            # Make sure that we have enough rate limits requests remaining
+            remain = int(res.headers.get('X-RateLimit-Remaining', '0'))
+            if remain < 100:
+                print('  failed')
+                reset = datetime.fromtimestamp(int(res.headers['X-RateLimit-Reset']), timezone.utc).astimezone()
+                logging.error(f"Rate limits exceeded. Aborting conversion. Please retry after {str(reset)}")
+                return
 
-    # Dump ticket comments to files (for comparisons)
-    if runoptions.content_before:
-        dumpfiles(runoptions.content_before, before, 'Ticket ')
-    if runoptions.content_after:
-        dumpfiles(runoptions.content_after, after, 'Ticket ')
+            # Poll GitHub to get the issue ID
+            delay = POLL_INITIAL
+            while resjson['status'] == 'pending':
+
+                # Sleep an exponential amount of time
+                time.sleep(delay)
+                delay = min(delay * POLL_FACTOR, POLL_MAX_DELAY)
+
+                # Fetch the current status
+                print(".", end='')
+                url = resjson['url']
+                res = requests.get(url, auth=gauth, headers=headers)
+                resjson = res.json()
+
+                # print(f"    URL:     {url}")
+                # print(f"    RETURN:  {res.status_code}")
+                # print(f"    HEADERS: {res.headers}")
+                # print(f"    JSON:    {resjson}")
+
+                if res.status_code != 200:
+                    print('  failed')
+                    logging.error(f"Failed to get status of ticket #{key}. Status code {res.status_code} returned")
+                    if 'message' in resjson:
+                        logging.error(f"Response text: {resjson['message']}")
+                    break
+
+            if res.status_code != 200:
+                break
+
+            # Get the github issue number and compare it against the expected ticket number
+            issueid = resjson['issue_url'].replace(resjson['repository_url'] + '/issues/', '')
+            print(f'  done, issue #{issueid}')
+
+            if int(issueid) != ticket['number']:
+                logging.error(f"Did not get equal issue id from GitHub. Got issue {issueid} for Assembla ticket {ticket['number']}")
 
 
 if __name__ == "__main__":

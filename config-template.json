@@ -1,0 +1,6 @@
+{
+    "dumpfile": "**replace with location to Assembla dumpfile**",
+    "userdump": "**replace with location to Assembla user dumpfile (optional)**",
+    "wikidump": "**replace with location to Assembla wiki dumpfile (optional)**",
+    "repo": "**replace with GitHub user/repo**"
+}
