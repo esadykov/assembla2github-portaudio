@@ -20,8 +20,8 @@ import functools
 # Ensure colored output on win32 platforms
 colorama.init()
 
-TOOLVERSION=3
-TOOLDATE="2020-09-09"
+TOOLVERSION=4
+TOOLDATE="2020-09-16"
 
 # Map Assembla field values to GitHub lables. The value 'None' indicates that
 # the field will be omitted.
@@ -227,7 +227,8 @@ _URL_RE_TICKETS = []
 # Polling exponential delay
 POLL_INITIAL = 0.1
 POLL_FACTOR = 1.628347746
-POLL_MAX_DELAY = 5
+POLL_MAX_DELAY = 8
+POLL_MAX_FAILS = 8
 
 class UnsetMeta(type):
     def __repr__(self):
@@ -2339,23 +2340,31 @@ def cmd_ticketsconvert(parser, options, config, auth, data):
                 print(".", end='')
                 url = resjson['url']
                 res = requests.get(url, auth=gauth, headers=headers)
-                resjson = res.json()
+
+                try:
+                    resjson = res.json()
+                    jsonfail = False
+                except json.decoder.JSONDecodeError as err:
+                    resjson = {}
+                    jsonfail = str(err)
 
                 # print(f"    URL:     {url}")
                 # print(f"    RETURN:  {res.status_code}")
                 # print(f"    HEADERS: {res.headers}")
                 # print(f"    JSON:    {resjson}")
 
-                if res.status_code != 200:
+                if res.status_code != 200 or jsonfail:
                     print('F', end='')
                     logging.error(f"Failed to get status of ticket #{key}. Status code {res.status_code} returned")
                     logging.error(f"Headers: {res.headers}")
+                    if jsonfail:
+                        logging.error(f"Could not load JSON: {jsonfail}")
                     if 'message' in resjson:
                         logging.error(f"Response text: {resjson['message']}")
 
                     # Ensure retries
                     failcount += 1
-                    if failcount < 5:
+                    if failcount < POLL_MAX_FAILS:
                         logging.warning("Retrying...")
                         continue
                     break
