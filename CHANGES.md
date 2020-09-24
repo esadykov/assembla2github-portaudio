@@ -1,5 +1,9 @@
 # Changelog
 
+## Version 4
+
+- Remove PortAudio specifics to make the tool generic for other projects
+
 ## Version 3
 
 - Added toolversion for tracking

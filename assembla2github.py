@@ -20,72 +20,29 @@ import functools
 # Ensure colored output on win32 platforms
 colorama.init()
 
-TOOLVERSION=4
-TOOLDATE="2020-09-16"
+TOOLVERSION=5
+TOOLDATE="2020-09-24"
 
 # Map Assembla field values to GitHub lables. The value 'None' indicates that
 # the field will be omitted.
 ASSEMBLA_TO_GITHUB_LABELS = {
     'status': {
-        'New': None,
-        'Accepted': None,
-        'Test': None,
-        'Invalid': 'invalid',
-        'Fixed': None,
-        'Duplicate': 'duplicate',
-        'WontFix': 'wontfix',
-        'WorksForMe': 'invalid',
+        # Examples:
+        # 'New': None,
+        # 'WorksForMe': 'invalid',
     },
     'priority': {
-        'Highest (1)': 'P1',
-        'High (2)': 'P2',
-        'Normal (3)': 'P3',
-        'Low (4)': 'P4',
-        'Lowest (5)': 'P5',
+        # 'Highest (1)': 'P1',
+        # 'High (2)': 'P2',
+        # 'Normal (3)': 'P3',
+        # 'Low (4)': 'P4',
+        # 'Lowest (5)': 'P5',
     },
     'tags': {
-        'osx': 'osx',
-        'linux': 'linux',
-        'docs': 'documentation',
-        'windows': 'windows',
-        'git': 'git',
-        'qa': 'test-qa',
     },
     'component': {
-        'bindings': 'bindings',
-        'build-systems': 'build',
-        'common': 'src-common',
-        'documentation': 'documentation',
-        'global': 'audit',
-        'host-api-alsa': ('src-alsa', 'linux'),
-        'host-api-asihpi': 'src-asihpi',
-        'host-api-asio': ('src-asio', 'win'),
-        'host-api-coreaudio': ('src-coreaudio', 'osx'),
-        'host-api-dsound': ('src-dsound', 'win'),
-        'host-api-jack': ('src-jack'),
-        'host-api-oss': ('src-oss'),
-        'host-api-wasapi': ('src-wasapi', 'win'),
-        'host-api-wdmks': ('src-wdmks', 'win'),
-        'host-api-wmme': ('src-wmme', 'win'),
-        'os-mac_osx': ('src-os-mac_osx', 'osx'),
-        'os-windows': ('src-os-win', 'win'),
-        'other': None,
-        'public-api': 'public-api',
-        'test': 'test',
-        'website': 'website',
     },
     'keywords': {
-        # NB the Assembla ticket database has been updated so that all relevant
-        # tickets have been assigned a component. therefore there are only a few
-        # workflow related keywords that need to be mapped
-        'LIST-REVIEW': 'LIST-REVIEW',
-        'IN-REVIEW': 'IN-REVIEW',
-        'STARTER': 'good first issue',
-        'STARTER-PLUS': 'good first issue',
-        'QA': 'QA',
-        'CMake': 'build-cmake',
-        'git': 'git',
-        'portmixer': 'portmixer'
     }
 }
 
@@ -101,70 +58,6 @@ ASSEMBLA_TO_GITHUB_LABELS = {
 #   'question': 'd876e3',
 #   'wontfix': 'ffffff',
 NEW_GITHUB_LABELS = {
-    # Default GitHub tags that we will use (for status etc)
-    'documentation': '0075ca',  # ('component' Blue)
-    'duplicate': 'cfd3d7',  # (Grey)
-    'enhancement': 'a2eeef',  # (Cyan) -- not used yet
-    'good first issue': '7057ff',  # (Purple)
-    'help wanted': '008672',  # (Dark Teal) -- not used yet
-    'invalid': 'e4e669',  # (Mustard)
-    'question': 'd876e3',  # (Fuchsia) -- not used and we will be bouncing questions to the mailing list
-    'wontfix': 'ffffff',  # (White)
-
-    # components ('component' Blue)
-    # These are subsystems or areas that usually have separate maintainers such as APIs
-    'bindings': '0075ca',
-    'bindings-cpp': '0075ca',  # new
-    'bindings-java': '0075ca',  # new
-    'build': '0075ca',
-    'build-cmake': '0075ca',  # new
-    'build-autoconf': '0075ca',  # new
-    'build-msvs': '0075ca',  # new
-    'src-common': '0075ca',
-    # 'documentation': '0075ca', (already added above)
-    'audit': '0075ca',  # was 'global' (used for code review, design review)
-    'src-alsa': '0075ca',
-    'src-asihpi': '0075ca',
-    'src-asio': '0075ca',
-    'src-coreaudio': '0075ca',
-    'src-dsound': '0075ca',
-    'src-jack': '0075ca',
-    'src-oss': '0075ca',
-    'src-wasapi': '0075ca',
-    'src-wdmks': '0075ca',
-    'src-wmme': '0075ca',
-    'src-os-mac_osx': '0075ca',
-    'src-os-win': '0075ca',
-    'public-api': '0075ca',
-    'test': '0075ca',  # tests in /tests
-    'test-qa': '0075ca',  # new: semi-automated tests in /qa
-    'test-examples': '0075ca',  # new: tests aka examples in /examples
-    'website': '0075ca',
-
-    # priority
-    'P0': 'ff0000',  # Critical / Show Stopper (Red)
-    'P1': 'ff7f27',  # Highest (Orange)
-    'P2': 'fff200',  # High (Yellow)
-    'P3': '7fff00',  # Normal (Green)
-    'P4': '00a2e8',  # Low (Blue)
-    'P5': 'e5e5e5',  # Lowest (Grey)
-
-    # tags (lighter than component blue)
-    # Mostly just operating system and some misceleny
-    # os
-    'osx': '80caff',
-    'linux': '80caff',
-    'windows': '80caff',
-    # misc
-    'git': '80caff',
-
-    # keywords
-    'LIST-REVIEW': 'cc3399',  # (Deep pink)
-    'IN-REVIEW': 'cc3399',  # ditto
-    'STARTER': '22b14c',    # (Emerald Green)
-    'STARTER-PLUS': '22b14c',  # ditto
-    'QA': '2d73eb',
-    'portmixer': '80caff',
 }
 
 # Mapping from Assemblas numerical priority format to their string format
@@ -193,7 +86,7 @@ ASSEMBLA_USERID = {
 }
 
 # Settings for Wiki conversions
-WIKI_MENU_HEADING = "# PortAudio"
+WIKI_MENU_HEADING = "# Title"
 WIKI_FIXUP_AUTHOR_NAME = "Wiki converter"
 WIKI_FIXUP_AUTHOR_EMAIL = "none@localhost"
 WIKI_FIXUP_MESSAGE = "Updated Wiki to GitHub formatting"
@@ -827,15 +720,6 @@ def sub_link(m, ref, is_wiki, wikipages, documents):
     m3 = m[3]
     if not m[2]:
         # Is a [[wiki]] link (no prefix:)
-        # Special fixups
-        if m3 == 'tips/index':
-            m3 = 'Tips'
-        if m3 == 'platforms/index':
-            m3 = 'Platforms'
-        if m3 == 'BR':
-            return "\n"
-        if m3 == ' $AR = "no" ':
-            return m[0]
         m5 = m[5]
         if not wikipages or m3 not in wikipages:
             logging.warning(f"{ref}: Wiki links to unknown page '{m3.strip()}'")

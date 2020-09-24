@@ -8,14 +8,6 @@ Assembla to GitHub.
 The tool has been significantly expanded since the original script by
 @PeteW.
 
-### features/function
-migrates a full assembla site's tickets/milestones to github's issue format
-* Ticket status -> issue status (open/closed)
-* Ticket comment/conversation history
-* Ticket user assignment
-* Original assembla ticket number preserved
-* Ticket/milestone associations
-
 ### installation/setup
 
 1. Install Python 3.7
