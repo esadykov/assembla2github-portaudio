@@ -113,3 +113,6 @@ __*
 auth.json
 config.json
 *.git/
+
+# IDE
+.idea/

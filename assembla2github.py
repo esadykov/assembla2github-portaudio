@@ -28,15 +28,15 @@ TOOLDATE="2020-09-24"
 ASSEMBLA_TO_GITHUB_LABELS = {
     'status': {
         # Examples:
-        # 'New': None,
-        # 'WorksForMe': 'invalid',
+        'New': None,
+        'WorksForMe': 'invalid',
     },
     'priority': {
-        # 'Highest (1)': 'P1',
-        # 'High (2)': 'P2',
-        # 'Normal (3)': 'P3',
-        # 'Low (4)': 'P4',
-        # 'Lowest (5)': 'P5',
+        'Highest (1)': 'P1',
+        'High (2)': 'P2',
+        'Normal (3)': 'P3',
+        'Low (4)': 'P4',
+        'Lowest (5)': 'P5',
     },
     'tags': {
     },
@@ -324,7 +324,8 @@ def filereadertoassemblaobjectgenerator(filereader, fieldmap):
 
         # Remove all non printable characters from the line
         _line = line.rstrip()
-        line = ''.join(x for x in _line if x in string.printable)
+        # line = ''.join(x for x in _line if x in string.printable)
+
         if line != _line:
             logging.debug(f"line #{linenum}: Unprintable chars in '{line}'")
         logging.debug(f"line #{linenum}: {line}")
@@ -536,7 +537,7 @@ def wikicommitgenerator(wikiversions, order):
         # Make ordered list of wiki pages that are present at this time
         indexpages = filter(lambda w: w['_created_at'] <= now and w['status'] == 1, order)
 
-        fname = p['page_name'] + '.md'
+        fname = 'pages/' + p['page_name'] + '.md'
         author = v['_user']
 
         # Warn if we don't have the data for the user
@@ -550,7 +551,7 @@ def wikicommitgenerator(wikiversions, order):
             'name': p['page_name'],
             'version': p['version'],
             'files': {
-                '_Sidebar.md': wikiindexproducer(indexpages),
+                'readme.md': wikiindexproducer(indexpages),
                 fname: v['contents'] or None,
             },
             'author_name': nameorid(author),
@@ -567,7 +568,7 @@ def wikicommitgenerator(wikiversions, order):
         if not v:
             continue
         logging.debug(f"Migrating page '{k}'")
-        contents = migratetexttomd(v, k, migrate_at=True, wikipages=page_names)
+        contents = v#migratetexttomd(v, k, migrate_at=True, wikipages=page_names)
         if contents == v:
             continue
         files[k] = contents
@@ -593,7 +594,7 @@ def wikiindexproducer(index):
 
 '''
     for v in index:
-        out += ('  ' * v['_level']) + f"* [[{v['page_name']}]]\n"
+        out += ('  ' * v['_level']) + f"* [{v['page_name']}](pages/{v['page_name']}.md)\n"
     return out
 
 
@@ -1815,7 +1816,7 @@ def cmd_wikiconvert(parser, options, config, auth, data):
     repo = None
     if not options.dry_run:
 
-        url = 'https://github.com/' + config['repo'] + '.wiki.git'
+        url = 'https://github.com/' + config['repo'] + '.git'
         logging.info(f"Checking out '{url}'")
 
         repo = git.Repo.clone_from(url, wikidir)
@@ -1834,6 +1835,8 @@ def cmd_wikiconvert(parser, options, config, auth, data):
 
         name = f"{commit['name']}:{commit['version']}"
         logging.debug(f"Converting page '{name}'")
+
+        pathlib.Path(wikirepo,'pages').mkdir(parents=True, exist_ok=True)
 
         files = []
         for name, contents in commit['files'].items():
